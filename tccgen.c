@@ -5146,20 +5146,58 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                             const char *field_name = get_tok_str(field->v & ~SYM_FIELD, NULL);
                             char field_type_buf[256];
 
+                            /* Check if this is an array field */
+                            int is_array = (field->type.t & (VT_ARRAY|VT_VLA));
+
                             /* Preserve typedef names (don't expand) */
-                            if (field->type.typedef_token) {
+                            if (field->type.typedef_token && !is_array) {
                                 const char *field_typedef_name = get_tok_str(field->type.typedef_token, NULL);
                                 snprintf(field_type_buf, sizeof(field_type_buf), "%s", field_typedef_name);
-                            } else if (((field->type.t & VT_BTYPE) == VT_PTR) && field->type.ref && field->type.ref->type.typedef_token) {
+                            } else if (((field->type.t & VT_BTYPE) == VT_PTR) && !is_array && field->type.ref && field->type.ref->type.typedef_token) {
                                 /* For pointer types, check if the pointed-to type has a typedef name */
                                 const char *field_typedef_name = get_tok_str(field->type.ref->type.typedef_token, NULL);
                                 snprintf(field_type_buf, sizeof(field_type_buf), "%s *", field_typedef_name);
                             } else {
-                                /* No typedef info, use type_to_str */
-                                type_to_str(field_type_buf, sizeof(field_type_buf), &field->type, NULL);
+                                /* Use type_to_str with field name for arrays */
+                                type_to_str(field_type_buf, sizeof(field_type_buf), &field->type, is_array ? field_name : NULL);
                             }
 
-                            fprintf(tcc_state->usage_output, " %s: %s;", field_name, field_type_buf);
+                            /* For arrays, extract type and array suffix from field_type_buf */
+                            /* field_type_buf contains: "type field_name[N]" */
+                            if (is_array) {
+                                /* Extract the array suffix from field_type_buf */
+                                /* Format is: "type fieldname[N]" or "type fieldname[N][M]" */
+                                char *bracket_pos = strchr(field_type_buf, '[');
+                                if (bracket_pos) {
+                                    /* Find where fieldname starts (after last space before '[') */
+                                    char *name_start = bracket_pos - 1;
+                                    while (name_start > field_type_buf && *name_start != ' ') {
+                                        name_start--;
+                                    }
+                                    if (*name_start == ' ') name_start++;
+
+                                    /* Extract type part (everything before name) */
+                                    int type_len = name_start - field_type_buf;
+                                    char type_part[256];
+                                    strncpy(type_part, field_type_buf, type_len);
+                                    type_part[type_len] = '\0';
+                                    /* Trim trailing space from type */
+                                    while (type_len > 0 && type_part[type_len-1] == ' ') {
+                                        type_part[--type_len] = '\0';
+                                    }
+
+                                    /* Array suffix is from '[' to end */
+                                    const char *array_suffix = bracket_pos;
+
+                                    /* Output as: field_name: type array_suffix */
+                                    fprintf(tcc_state->usage_output, " %s: %s %s;", field_name, type_part, array_suffix);
+                                } else {
+                                    /* Shouldn't happen, but fallback */
+                                    fprintf(tcc_state->usage_output, " %s: %s;", field_name, field_type_buf);
+                                }
+                            } else {
+                                fprintf(tcc_state->usage_output, " %s: %s;", field_name, field_type_buf);
+                            }
                         }
                         field = field->next;
                     }
