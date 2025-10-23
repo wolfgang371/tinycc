@@ -3694,6 +3694,34 @@ redo:
         /* if reading from file, try to substitute macros */
         Sym *s = define_find(t);
         if (s) {
+            /* Track top-level macro usage for mincut */
+            if (tcc_state->track_usage && tcc_state->usage_output && s->d) {
+                const char *macro_name = get_tok_str(t, NULL);
+                const char *filename = file ? file->filename : "<unknown>";
+                fprintf(tcc_state->usage_output, "MACRO_USAGE: %s, VALUE: ", macro_name);
+
+                /* Output macro expansion tokens */
+                const int *p = s->d;
+                CValue cv;
+                int tok_exp;
+                while (1) {
+                    TOK_GET(&tok_exp, &p, &cv);
+                    if (tok_exp == 0)
+                        break;
+                    if (tok_exp == TOK_CINT || tok_exp == TOK_CCHAR) {
+                        fprintf(tcc_state->usage_output, "%d ", (int)cv.i);
+                    } else if (tok_exp == TOK_STR) {
+                        fprintf(tcc_state->usage_output, "\"%s\" ", (char *)cv.str.data);
+                    } else {
+                        const char *tok_str = get_tok_str(tok_exp, &cv);
+                        if (tok_str && tok_str[0])
+                            fprintf(tcc_state->usage_output, "%s ", tok_str);
+                    }
+                }
+                fprintf(tcc_state->usage_output, ", FILE: %s\n", filename);
+                fflush(tcc_state->usage_output);
+            }
+
             Sym *nested_list = NULL;
             macro_subst_tok(&tokstr_buf, &nested_list, s);
             tok_str_add(&tokstr_buf, 0);
