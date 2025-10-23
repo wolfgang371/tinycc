@@ -98,6 +98,16 @@ LIBTCCAPI void *tcc_get_symbol(TCCState *s, const char *name);
 LIBTCCAPI void tcc_list_symbols(TCCState *s, void *ctx,
     void (*symbol_cb)(void *ctx, const char *name, const void *val));
 
+/*****************************/
+/* usage tracking for mincut stub generation */
+
+/* enable usage tracking and set output file path */
+LIBTCCAPI int tcc_enable_usage_tracking(TCCState *s, const char *output_file);
+
+/* disable usage tracking and close output file */
+LIBTCCAPI void tcc_disable_usage_tracking(TCCState *s);
+
+/*****************************/
 /* experimental/advanced section (see libtcc_test_mt.c for an example) */
 
 /* catch runtime exceptions (optionally limit backtraces at top_func),

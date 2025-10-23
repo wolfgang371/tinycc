@@ -1695,6 +1695,35 @@ ST_FUNC void parse_define(void)
     if (t0 == TOK_PPJOIN)
 bad_twosharp:
         tcc_error("'##' cannot appear at either end of macro");
+
+    /* Track macro declaration for mincut */
+    if (tcc_state->track_usage && tcc_state->usage_output && str.str) {
+        const char *macro_name = get_tok_str(v, NULL);
+        const char *filename = file ? file->filename : "<unknown>";
+        fprintf(tcc_state->usage_output, "MACRO_DECL: %s, VALUE: ", macro_name);
+
+        /* Output macro expansion tokens */
+        const int *p = str.str;
+        CValue cv;
+        int tok_val;
+        while (1) {
+            TOK_GET(&tok_val, &p, &cv);
+            if (tok_val == 0)
+                break;
+            if (tok_val == TOK_CINT || tok_val == TOK_CCHAR) {
+                fprintf(tcc_state->usage_output, "%d ", (int)cv.i);
+            } else if (tok_val == TOK_STR) {
+                fprintf(tcc_state->usage_output, "\"%s\" ", (char *)cv.str.data);
+            } else {
+                const char *tok_str = get_tok_str(tok_val, &cv);
+                if (tok_str && tok_str[0])
+                    fprintf(tcc_state->usage_output, "%s ", tok_str);
+            }
+        }
+        fprintf(tcc_state->usage_output, ", FILE: %s\n", filename);
+        fflush(tcc_state->usage_output);
+    }
+
     define_push(v, t, str.str, first);
     //tok_print(str.str, "#define (%d) %s %d:", t | is_vaargs * 4, get_tok_str(v, 0));
 }
@@ -3427,8 +3456,20 @@ static int macro_subst_tok(
                         parlevel--;
                     if (t == ' ')
                         str.need_spc |= 1;
-                    else
+                    else {
+                        /* Track identifiers used as macro arguments for mincut */
+                        if (tcc_state->track_usage && tcc_state->usage_output &&
+                            t >= TOK_IDENT && parlevel == 0) {
+                            const char *arg_name = get_tok_str(t, &tokc);
+                            const char *macro_name = get_tok_str(v, 0);
+                            const char *filename = file ? file->filename : "<unknown>";
+                            fprintf(tcc_state->usage_output,
+                                    "MACRO_ARG: %s, MACRO: %s, FILE: %s\n",
+                                    arg_name, macro_name, filename);
+                            fflush(tcc_state->usage_output);
+                        }
                         tok_str_add2_spc(&str, t, &tokc);
+                    }
                     t = next_argstream(nested_list, NULL);
                 }
                 tok_str_add(&str, TOK_EOF);
@@ -3548,6 +3589,36 @@ static int macro_subst(
             s = define_find(t);
             if (s == NULL || nosubst)
                 goto no_subst;
+
+            /* Track macro usage for mincut (USAGE = where macro is expanded) */
+            if (tcc_state->track_usage && tcc_state->usage_output && s->d) {
+                const char *macro_name = get_tok_str(t, NULL);
+                const char *filename = file ? file->filename : "<unknown>";
+                fprintf(tcc_state->usage_output, "MACRO_USAGE: %s, VALUE: ", macro_name);
+
+                /* Output macro expansion tokens */
+                const int *p = s->d;
+                CValue cv;
+                int tok;
+                while (1) {
+                    TOK_GET(&tok, &p, &cv);
+                    if (tok == 0)
+                        break;
+                    if (tok == TOK_CINT || tok == TOK_CCHAR) {
+                        fprintf(tcc_state->usage_output, "%d ", (int)cv.i);
+                    } else if (tok == TOK_STR) {
+                        fprintf(tcc_state->usage_output, "\"%s\" ", (char *)cv.str.data);
+                    } else {
+                        /* Use get_tok_str for all other tokens (identifiers and operators) */
+                        const char *tok_str = get_tok_str(tok, &cv);
+                        if (tok_str && tok_str[0])
+                            fprintf(tcc_state->usage_output, "%s ", tok_str);
+                    }
+                }
+                fprintf(tcc_state->usage_output, ", FILE: %s\n", filename);
+                fflush(tcc_state->usage_output);
+            }
+
             /* if nested substitution, do nothing */
             if (sym_find2(*nested_list, t)) {
                 /* and mark so it doesn't get subst'd again */

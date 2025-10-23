@@ -2172,6 +2172,33 @@ LIBTCCAPI int tcc_set_options(TCCState *s, const char *r)
     return ret;
 }
 
+/* Usage tracking for mincut stub generation */
+LIBTCCAPI int tcc_enable_usage_tracking(TCCState *s, const char *output_file)
+{
+    if (!s)
+        return -1;
+    if (s->usage_output)
+        fclose(s->usage_output);
+    s->usage_output = fopen(output_file, "w");
+    if (!s->usage_output) {
+        fprintf(stderr, "tcc: could not open usage tracking file '%s'\n", output_file);
+        return -1;
+    }
+    s->track_usage = 1;
+    return 0;
+}
+
+LIBTCCAPI void tcc_disable_usage_tracking(TCCState *s)
+{
+    if (!s)
+        return;
+    if (s->usage_output) {
+        fclose(s->usage_output);
+        s->usage_output = NULL;
+    }
+    s->track_usage = 0;
+}
+
 PUB_FUNC void tcc_print_stats(TCCState *s1, unsigned total_time)
 {
     if (!total_time)

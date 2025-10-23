@@ -160,6 +160,152 @@ static void end_switch(void);
 static void do_Static_assert(void);
 
 /* ------------------------------------------------------------------------- */
+/* Forward declaration for type_to_str (defined later in this file) */
+static void type_to_str(char *buf, int buf_size, CType *type, const char *varstr);
+
+/* Type to string preserving typedef names */
+static void type_to_str_preserve_typedef(char *buf, int buf_size, CType *type, const char *varstr)
+{
+    int bt = type->t & VT_BTYPE;
+
+    /* Handle pointers recursively to preserve typedef in pointed-to type */
+    if (bt == VT_PTR && type->ref) {
+        char buf1[256];
+        char prefix[64] = "";
+
+        /* Add pointer qualifiers */
+        pstrcpy(buf1, sizeof(buf1), "*");
+        if (type->t & VT_CONSTANT)
+            pstrcat(buf1, sizeof(buf1), "const ");
+        if (type->t & VT_VOLATILE)
+            pstrcat(buf1, sizeof(buf1), "volatile ");
+        if (varstr)
+            pstrcat(buf1, sizeof(buf1), varstr);
+
+        /* Recursively preserve typedef in pointed-to type */
+        type_to_str_preserve_typedef(buf, buf_size, &type->ref->type, buf1);
+        return;
+    }
+
+    /* Check if this type came from a typedef */
+    if (type->typedef_token) {
+        /* Use the original typedef name */
+        const char *typedef_name = get_tok_str(type->typedef_token, NULL);
+        char prefix[64] = "";
+
+        /* Add qualifiers that were added after the typedef */
+        if (type->t & VT_CONSTANT)
+            strcat(prefix, "const ");
+        if (type->t & VT_VOLATILE)
+            strcat(prefix, "volatile ");
+
+        snprintf(buf, buf_size, "%s%s%s%s",
+            prefix,
+            typedef_name,
+            varstr ? " " : "",
+            varstr ? varstr : "");
+        return;
+    }
+
+    /* Fall back to regular type_to_str */
+    type_to_str(buf, buf_size, type, varstr);
+}
+
+/* Usage tracking for mincut stub generation */
+
+static void track_symbol_usage(const char *name, const char *context)
+{
+    if (!tcc_state->track_usage || !tcc_state->usage_output)
+        return;
+    fprintf(tcc_state->usage_output, "SYMBOL: %s, CONTEXT: %s\n", name, context);
+    fflush(tcc_state->usage_output);
+}
+
+static void track_field_usage_with_type(const char *struct_name, const char *field_name,
+                                         int is_arrow, CType *field_type)
+{
+    char type_buf[256];
+    if (!tcc_state->track_usage || !tcc_state->usage_output)
+        return;
+
+    /* Check if field type has typedef token */
+    if (field_type->typedef_token) {
+        const char *typedef_name = get_tok_str(field_type->typedef_token, NULL);
+        snprintf(type_buf, sizeof(type_buf), "%s", typedef_name);
+    } else if (((field_type->t & VT_BTYPE) == VT_PTR) && field_type->ref && field_type->ref->type.typedef_token) {
+        /* For pointer types, check if the pointed-to type has a typedef name */
+        const char *typedef_name = get_tok_str(field_type->ref->type.typedef_token, NULL);
+        snprintf(type_buf, sizeof(type_buf), "%s *", typedef_name);
+    } else {
+        /* No typedef info, use type_to_str */
+        type_to_str(type_buf, sizeof(type_buf), field_type, NULL);
+    }
+
+    const char *filename = file ? file->filename : "<unknown>";
+    fprintf(tcc_state->usage_output, "FIELD: %s%s%s, TYPE: %s, FILE: %s\n",
+            struct_name, is_arrow ? "->" : ".", field_name, type_buf, filename);
+    fflush(tcc_state->usage_output);
+}
+
+static void track_function_usage_with_type(const char *func_name, Sym *func_sym, int arg_count)
+{
+    char ret_type_buf[256];
+    char param_buf[1024];
+    Sym *param;
+    int first;
+
+    if (!tcc_state->track_usage || !tcc_state->usage_output)
+        return;
+
+    /* Get return type */
+    type_to_str(ret_type_buf, sizeof(ret_type_buf), &func_sym->type, NULL);
+
+    /* Get parameter types */
+    param_buf[0] = '\0';
+    param = func_sym->next;
+    first = 1;
+    while (param) {
+        char pbuf[256];
+        if (!first)
+            pstrcat(param_buf, sizeof(param_buf), ", ");
+        type_to_str(pbuf, sizeof(pbuf), &param->type, NULL);
+        pstrcat(param_buf, sizeof(param_buf), pbuf);
+        param = param->next;
+        first = 0;
+    }
+
+    const char *filename = file ? file->filename : "<unknown>";
+    fprintf(tcc_state->usage_output, "FUNCTION: %s, RETURN: %s, PARAMS: (%s), ARGS: %d, FILE: %s\n",
+            func_name, ret_type_buf, param_buf, arg_count, filename);
+    fflush(tcc_state->usage_output);
+}
+
+static void track_typedef_usage(CType *type)
+{
+    if (!tcc_state->track_usage || !tcc_state->usage_output)
+        return;
+
+    /* Track typedef usage - recursively check type for typedef tokens */
+    if (type->typedef_token) {
+        const char *typedef_name = get_tok_str(type->typedef_token, NULL);
+        const char *filename = file ? file->filename : "<unknown>";
+        fprintf(tcc_state->usage_output, "TYPEDEF_USAGE: %s, FILE: %s\n",
+                typedef_name, filename);
+        fflush(tcc_state->usage_output);
+    }
+
+    /* For pointer types, also check the pointed-to type */
+    if ((type->t & VT_BTYPE) == VT_PTR && type->ref) {
+        track_typedef_usage(&type->ref->type);
+    }
+
+    /* For array types, check the element type */
+    if ((type->t & VT_ARRAY) && type->ref) {
+        track_typedef_usage(&type->ref->type);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
 /* Automagical code suppression */
 
 /* Clear 'nocode_wanted' at forward label if it was used */
@@ -751,6 +897,7 @@ ST_FUNC Sym *sym_push(int v, CType *type, int r, int c)
         ps = &global_stack;
     s = sym_push2(ps, v, type->t, c);
     s->type.ref = type->ref;
+    s->type.typedef_token = type->typedef_token;  /* Preserve typedef token */
     s->r = r;
     /* don't record fields or anonymous symbols */
     if ((v & ~SYM_STRUCT) < SYM_FIRST_ANOM) {
@@ -3565,6 +3712,7 @@ ST_FUNC void mk_pointer(CType *type)
     s = sym_push(SYM_FIELD, type, 0, -1);
     type->t = VT_PTR | (type->t & VT_STORAGE);
     type->ref = s;
+    type->typedef_token = 0;  /* Pointer type itself has no typedef (typedef is on pointed-to type) */
 }
 
 /* return true if type1 and type2 are exactly the same (including
@@ -4469,6 +4617,17 @@ static void struct_decl(CType *type, int u)
     /* we put an undefined size for struct/union */
     s = sym_push(v | SYM_STRUCT, &type1, 0, bt ? 0 : -1);
     s->r = 0; /* default alignment is zero as gcc */
+
+    /* Track struct/union/enum declaration for mincut */
+    if (tcc_state->track_usage && tcc_state->usage_output && !(v & SYM_FIRST_ANOM)) {
+        const char *struct_name = get_tok_str(v, NULL);
+        const char *struct_type = (u == VT_UNION) ? "union" : (u == VT_ENUM) ? "enum" : "struct";
+        const char *filename = file ? file->filename : "<unknown>";
+        fprintf(tcc_state->usage_output, "STRUCT_DECL: %s %s, FILE: %s\n",
+                struct_type, struct_name, filename);
+        fflush(tcc_state->usage_output);
+    }
+
 do_decl:
     type->t = s->type.t;
     type->ref = s;
@@ -4505,6 +4664,16 @@ do_decl:
 			get_tok_str(v, NULL));
                 ss = sym_push(v, &t, VT_CONST, 0);
                 ss->enum_val = ll;
+
+                /* Track enum constant declaration for mincut */
+                if (tcc_state->track_usage && tcc_state->usage_output) {
+                    const char *enum_name = get_tok_str(v, NULL);
+                    const char *filename = file ? file->filename : "<unknown>";
+                    fprintf(tcc_state->usage_output, "ENUM_DECL: %s, VALUE: %lld, FILE: %s\n",
+                            enum_name, ll, filename);
+                    fflush(tcc_state->usage_output);
+                }
+
                 *ps = ss, ps = &ss->next;
                 if (ll < nl)
                     nl = ll;
@@ -4651,6 +4820,32 @@ do_decl:
                     if (v) {
                         ss = sym_push(v | SYM_FIELD, &type1, 0, 0);
                         ss->a = ad1.a;
+
+                        /* Track field declaration for mincut */
+                        if (tcc_state->track_usage && tcc_state->usage_output) {
+                            const char *struct_name = get_tok_str(s->v & ~SYM_STRUCT, NULL);
+                            const char *field_name = get_tok_str(v, NULL);
+                            char type_buf[256];
+
+                            /* Check if field type has typedef token (preserve typedef names) */
+                            if (type1.typedef_token) {
+                                const char *typedef_name = get_tok_str(type1.typedef_token, NULL);
+                                snprintf(type_buf, sizeof(type_buf), "%s", typedef_name);
+                            } else if (((type1.t & VT_BTYPE) == VT_PTR) && type1.ref && type1.ref->type.typedef_token) {
+                                /* For pointer types, check if the pointed-to type has a typedef name */
+                                const char *typedef_name = get_tok_str(type1.ref->type.typedef_token, NULL);
+                                snprintf(type_buf, sizeof(type_buf), "%s *", typedef_name);
+                            } else {
+                                /* No typedef info, use type_to_str */
+                                type_to_str(type_buf, sizeof(type_buf), &type1, NULL);
+                            }
+
+                            const char *filename = file ? file->filename : "<unknown>";
+                            fprintf(tcc_state->usage_output, "FIELD_DECL: %s.%s, TYPE: %s, FILE: %s\n",
+                                    struct_name, field_name, type_buf, filename);
+                            fflush(tcc_state->usage_output);
+                        }
+
                         *ps = ss;
                         ps = &ss->next;
                     }
@@ -4706,6 +4901,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
     t = VT_INT;
     bt = st = -1;
     type->ref = NULL;
+    type->typedef_token = 0;  /* Initialize typedef_token to avoid garbage values */
 
     while(1) {
         switch(tok) {
@@ -4917,6 +5113,62 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             if (!s || !(s->type.t & VT_TYPEDEF))
                 goto the_end;
 
+            /* Track typedef usage for mincut */
+            if (tcc_state->track_usage && tcc_state->usage_output) {
+                const char *typedef_name = get_tok_str(tok, NULL);
+                char type_buf[256];
+                const char *filename = file ? file->filename : "<unknown>";
+                type_to_str(type_buf, sizeof(type_buf), &s->type, NULL);
+                fprintf(tcc_state->usage_output, "TYPEDEF: %s, TYPE: %s, FILE: %s\n",
+                        typedef_name, type_buf, filename);
+
+                /* If it's a typedef of an anonymous struct/union, output the fields */
+                /* Only track anonymous types - named types are handled by regular TYPEDEF tracking */
+                /* Anonymous means: tag name is NULL, empty, or compiler-generated (starts with "L.") */
+                int is_struct_or_union = ((s->type.t & VT_BTYPE) == VT_STRUCT) || IS_UNION(s->type.t);
+                const char *tag_name = (s->type.ref && s->type.ref->v) ? get_tok_str(s->type.ref->v, NULL) : NULL;
+                int is_truly_anonymous = !tag_name || tag_name[0] == '\0' ||
+                                       (tag_name[0] == 'L' && tag_name[1] == '.');
+                int is_anonymous = s->type.ref && is_truly_anonymous;
+
+                /* Debug: Check event_t specifically */
+                if (strcmp(typedef_name, "event_t") == 0) {
+                    fprintf(tcc_state->usage_output, "DEBUG_event_t: v=%d, ANOM=%d, is_anon=%d, tag='%s', truly_anon=%d\n",
+                            s->type.ref ? s->type.ref->v : -1, SYM_FIRST_ANOM, is_anonymous,
+                            tag_name ? tag_name : "NULL", is_truly_anonymous);
+                }
+
+                if (s->type.ref && is_struct_or_union && is_anonymous) {
+                    Sym *field = s->type.ref->next;
+                    fprintf(tcc_state->usage_output, "TYPEDEF_STRUCT: %s {", typedef_name);
+                    while (field) {
+                        if (field->v) {
+                            const char *field_name = get_tok_str(field->v & ~SYM_FIELD, NULL);
+                            char field_type_buf[256];
+
+                            /* Preserve typedef names (don't expand) */
+                            if (field->type.typedef_token) {
+                                const char *field_typedef_name = get_tok_str(field->type.typedef_token, NULL);
+                                snprintf(field_type_buf, sizeof(field_type_buf), "%s", field_typedef_name);
+                            } else if (((field->type.t & VT_BTYPE) == VT_PTR) && field->type.ref && field->type.ref->type.typedef_token) {
+                                /* For pointer types, check if the pointed-to type has a typedef name */
+                                const char *field_typedef_name = get_tok_str(field->type.ref->type.typedef_token, NULL);
+                                snprintf(field_type_buf, sizeof(field_type_buf), "%s *", field_typedef_name);
+                            } else {
+                                /* No typedef info, use type_to_str */
+                                type_to_str(field_type_buf, sizeof(field_type_buf), &field->type, NULL);
+                            }
+
+                            fprintf(tcc_state->usage_output, " %s: %s;", field_name, field_type_buf);
+                        }
+                        field = field->next;
+                    }
+                    fprintf(tcc_state->usage_output, " }, FILE: %s\n", filename);
+                }
+
+                fflush(tcc_state->usage_output);
+            }
+
             n = tok, next();
             if (tok == ':' && ignore_label) {
                 /* ignore if it's a label */
@@ -4928,6 +5180,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             u = t & ~(VT_CONSTANT | VT_VOLATILE), t ^= u;
             type->t = (s->type.t & ~VT_TYPEDEF) | u;
             type->ref = s->type.ref;
+            type->typedef_token = n;  /* Save original typedef token */
             if (t)
                 parse_btype_qualify(type, t);
             t = type->t;
@@ -6082,8 +6335,15 @@ special_math_val:
         s = sym_find(t);
         if (!s || IS_ASM_SYM(s)) {
             const char *name = get_tok_str(t, NULL);
-            if (tok != '(')
+            if (tok != '(') {
+                /* Track undeclared variable for mincut (assume int type) */
+                if (tcc_state->track_usage && tcc_state->usage_output) {
+                    const char *filename = file ? file->filename : "<unknown>";
+                    fprintf(tcc_state->usage_output, "EXTERN: %s, TYPE: int, FILE: %s\n", name, filename);
+                    fflush(tcc_state->usage_output);
+                }
                 tcc_error("'%s' undeclared", name);
+            }
             /* for simple function calls, we tolerate undeclared
                external reference to int() function */
             tcc_warning_c(warn_implicit_function_declaration)(
@@ -6103,6 +6363,22 @@ special_math_val:
 	   regvars.  */
 	vtop->sym = s;
 
+        /* Track ALL variable usage for mincut (before VT_SYM check) */
+        if (tcc_state->track_usage && tcc_state->usage_output) {
+            /* Only track variables, not functions (functions handled elsewhere) */
+            /* IMPORTANT: Must check (type.t & VT_BTYPE) == VT_FUNC, not type.t & VT_FUNC! */
+            /* VT_FUNC is a basic type value (6), not a flag bit */
+            if (!((s->type.t & VT_BTYPE) == VT_FUNC) && !(r == VT_CONST && IS_ENUM_VAL(s->type.t))) {
+                const char *var_name = get_tok_str(t, NULL);
+                char type_buf[256];
+                type_to_str(type_buf, sizeof(type_buf), &s->type, NULL);
+                const char *filename = file ? file->filename : "<unknown>";
+                fprintf(tcc_state->usage_output, "VAR_USE: %s, TYPE: %s, FILE: %s, R: 0x%x\n",
+                        var_name, type_buf, filename, r);
+                fflush(tcc_state->usage_output);
+            }
+        }
+
         if (r & VT_SYM) {
             vtop->c.i = 0;
 #ifdef TCC_TARGET_PE
@@ -6112,8 +6388,31 @@ special_math_val:
                 indir();
             }
 #endif
+            /* Track extern variable usage for mincut */
+            if (tcc_state->track_usage && tcc_state->usage_output) {
+                /* Only track variables, not functions (functions handled elsewhere) */
+                /* IMPORTANT: Must check (type.t & VT_BTYPE) == VT_FUNC, not type.t & VT_FUNC! */
+                if (!((s->type.t & VT_BTYPE) == VT_FUNC)) {
+                    const char *var_name = get_tok_str(t, NULL);
+                    char type_buf[256];
+                    type_to_str(type_buf, sizeof(type_buf), &s->type, NULL);
+                    const char *filename = file ? file->filename : "<unknown>";
+                    fprintf(tcc_state->usage_output, "EXTERN: %s, TYPE: %s, FILE: %s\n",
+                            var_name, type_buf, filename);
+                    fflush(tcc_state->usage_output);
+                }
+            }
         } else if (r == VT_CONST && IS_ENUM_VAL(s->type.t)) {
             vtop->c.i = s->enum_val;
+
+            /* Track enum constant usage for mincut */
+            if (tcc_state->track_usage && tcc_state->usage_output) {
+                const char *enum_name = get_tok_str(t, NULL);
+                const char *filename = file ? file->filename : "<unknown>";
+                fprintf(tcc_state->usage_output, "ENUM: %s, VALUE: %lld, FILE: %s\n",
+                        enum_name, s->enum_val, filename);
+                fflush(tcc_state->usage_output);
+            }
         }
         break;
     }
@@ -6125,14 +6424,27 @@ special_math_val:
             next();
         } else if (tok == '.' || tok == TOK_ARROW) {
             int qualifiers, cumofs;
-            /* field */ 
-            if (tok == TOK_ARROW) 
+            int is_arrow = (tok == TOK_ARROW);  /* track operator type */
+            /* field */
+            if (tok == TOK_ARROW)
                 indir();
             qualifiers = vtop->type.t & (VT_CONSTANT | VT_VOLATILE);
             test_lvalue();
             /* expect pointer on structure */
             next();
 	    s = find_field(&vtop->type, tok, &cumofs);
+            /* track field usage for mincut */
+            if (tcc_state->track_usage && s && vtop->type.ref) {
+                const char *struct_name;
+                /* Use typedef name if available, otherwise use struct's internal name */
+                if (vtop->type.typedef_token) {
+                    struct_name = get_tok_str(vtop->type.typedef_token, NULL);
+                } else {
+                    struct_name = get_tok_str(vtop->type.ref->v & ~SYM_STRUCT, NULL);
+                }
+                const char *field_name = get_tok_str(tok, NULL);
+                track_field_usage_with_type(struct_name, field_name, is_arrow, &s->type);
+            }
             /* add field offset to pointer */
             gaddrof();
             vtop->type = char_pointer_type; /* change type to 'char *' */
@@ -6140,6 +6452,8 @@ special_math_val:
             gen_op('+');
             /* change type to field type, and set to lvalue */
             vtop->type = s->type;
+            /* Track typedef usage when accessing field with typedef type */
+            track_typedef_usage(&vtop->type);
             vtop->type.t |= qualifiers;
             /* an array is never an lvalue */
             if (!(vtop->type.t & VT_ARRAY)) {
@@ -6164,6 +6478,17 @@ special_math_val:
             TokenString *p, *p2;
 
             /* function call  */
+            /* Track function call usage for mincut */
+            if (tcc_state->track_usage && tcc_state->usage_output) {
+                if ((vtop->type.t & VT_BTYPE) == VT_FUNC && vtop->sym) {
+                    const char *func_name = get_tok_str(vtop->sym->v, NULL);
+                    const char *filename = file ? file->filename : "<unknown>";
+                    fprintf(tcc_state->usage_output, "FUNCTION_USAGE: %s, FILE: %s\n",
+                            func_name, filename);
+                    fflush(tcc_state->usage_output);
+                }
+            }
+
             if ((vtop->type.t & VT_BTYPE) != VT_FUNC) {
                 /* pointer test (no array accepted) */
                 if ((vtop->type.t & (VT_BTYPE | VT_ARRAY)) == VT_PTR) {
@@ -6266,6 +6591,11 @@ special_math_val:
 
             next();
             vcheck_cmp(); /* the generators don't like VT_CMP on vtop */
+            /* track function call for mincut */
+            if (tcc_state->track_usage && s) {
+                const char *func_name = get_tok_str(s->v, NULL);
+                track_function_usage_with_type(func_name, s, nb_args);
+            }
             gfunc_call(nb_args);
 
             if (ret_nregs < 0) {
@@ -8307,6 +8637,11 @@ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r,
 	    }
 
             sym->a = ad->a;
+
+            /* Track typedef usage in local variable declaration for mincut */
+            if (tcc_state->track_usage && tcc_state->usage_output) {
+                track_typedef_usage(type);
+            }
         } else {
             /* push local reference */
             vset(type, r, addr);
@@ -8815,6 +9150,8 @@ static int decl(int l)
 		} else if (type.t & VT_TYPEDEF) {
                     /* save typedefed type  */
                     /* XXX: test storage specifiers ? */
+                    /* Set typedef_token so we can preserve the typedef name later */
+                    type.typedef_token = v;
                     sym = sym_find(v);
                     if (sym && sym->sym_scope == local_scope) {
                         if (!is_compatible_types(&sym->type, &type)
@@ -8826,6 +9163,29 @@ static int decl(int l)
                         sym = sym_push(v, &type, 0, 0);
                     }
                     sym->a = ad.a;
+
+                    /* Track typedef declaration for mincut */
+                    /* Skip anonymous struct/union/enum typedefs - they're tracked by TYPEDEF_STRUCT */
+                    /* Anonymous means: tag name is NULL, empty, or compiler-generated (starts with "L.") */
+                    if (tcc_state->track_usage && tcc_state->usage_output) {
+                        int is_struct_or_union = ((type.t & VT_BTYPE) == VT_STRUCT || (type.t & VT_BTYPE) == VT_UNION);
+                        int is_enum = ((type.t & VT_BTYPE) == VT_ENUM);
+                        const char *tag_name = (type.ref && type.ref->v) ? get_tok_str(type.ref->v, NULL) : NULL;
+                        int is_truly_anonymous = !tag_name || tag_name[0] == '\0' ||
+                                               (tag_name[0] == 'L' && tag_name[1] == '.');
+                        int is_anon_struct = is_struct_or_union && type.ref && is_truly_anonymous;
+                        int is_anon_enum = is_enum && type.ref && is_truly_anonymous;
+
+                        if (!is_anon_struct && !is_anon_enum) {
+                            const char *typedef_name = get_tok_str(v, NULL);
+                            char type_buf[256];
+                            const char *filename = file ? file->filename : "<unknown>";
+                            type_to_str(type_buf, sizeof(type_buf), &type, NULL);
+                            fprintf(tcc_state->usage_output, "TYPEDEF_DECL: %s, TYPE: %s, FILE: %s\n",
+                                    typedef_name, type_buf, filename);
+                            fflush(tcc_state->usage_output);
+                        }
+                    }
                     if ((type.t & VT_BTYPE) == VT_FUNC)
                       merge_funcattr(&sym->type.ref->f, &ad.f);
                     if (debug_modes)
@@ -8857,6 +9217,89 @@ static int decl(int l)
                         /* external variable or function */
                         type.t |= VT_EXTERN;
                         external_sym(v, &type, r, &ad);
+
+                        /* Track extern variable declaration for mincut */
+                        if (tcc_state->track_usage && tcc_state->usage_output &&
+                            (type.t & VT_BTYPE) != VT_FUNC) {
+                            const char *var_name = get_tok_str(v, NULL);
+                            char type_buf[256];
+                            const char *filename = file ? file->filename : "<unknown>";
+
+                            /* Preserve typedef names (don't expand) - check array FIRST */
+                            if ((type.t & VT_ARRAY) && type.ref) {
+                                /* For array types, get element type and array size */
+                                char elem_type_buf[200];
+                                if (type.ref->type.typedef_token) {
+                                    const char *typedef_name = get_tok_str(type.ref->type.typedef_token, NULL);
+                                    snprintf(elem_type_buf, sizeof(elem_type_buf), "%s", typedef_name);
+                                } else {
+                                    type_to_str(elem_type_buf, sizeof(elem_type_buf), &type.ref->type, NULL);
+                                }
+                                snprintf(type_buf, sizeof(type_buf), "extern %s [%d]", elem_type_buf, type.ref->c);
+                            } else if (type.typedef_token) {
+                                const char *typedef_name = get_tok_str(type.typedef_token, NULL);
+                                snprintf(type_buf, sizeof(type_buf), "extern %s", typedef_name);
+                            } else if (((type.t & VT_BTYPE) == VT_PTR) && type.ref && type.ref->type.typedef_token) {
+                                /* For pointer types, check if the pointed-to type has a typedef name */
+                                const char *typedef_name = get_tok_str(type.ref->type.typedef_token, NULL);
+                                snprintf(type_buf, sizeof(type_buf), "extern %s *", typedef_name);
+                            } else {
+                                /* No typedef info, use type_to_str */
+                                type_to_str(type_buf, sizeof(type_buf), &type, NULL);
+                            }
+
+                            fprintf(tcc_state->usage_output, "EXTERN_DECL: %s, TYPE: %s, FILE: %s\n",
+                                    var_name, type_buf, filename);
+                            fflush(tcc_state->usage_output);
+
+                            /* Track typedef usage in extern variable type */
+                            track_typedef_usage(&type);
+                        }
+
+                        /* Track function declaration for mincut */
+                        if (tcc_state->track_usage && tcc_state->usage_output &&
+                            (type.t & VT_BTYPE) == VT_FUNC) {
+                            const char *func_name = get_tok_str(v, NULL);
+                            char return_type_buf[256];
+                            char params_buf[1024];
+                            const char *filename = file ? file->filename : "<unknown>";
+
+                            /* Get return type - preserve typedef names */
+                            type_to_str_preserve_typedef(return_type_buf, sizeof(return_type_buf), &type.ref->type, NULL);
+
+                            /* Track typedef usage in return type */
+                            track_typedef_usage(&type.ref->type);
+
+                            /* Get parameters */
+                            params_buf[0] = '\0';
+                            Sym *param = type.ref->next;
+                            int first = 1;
+                            while (param) {
+                                if (!first) strcat(params_buf, ", ");
+                                first = 0;
+
+                                char param_type[256];
+                                /* Preserve typedef names in parameters */
+                                type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, NULL);
+                                strcat(params_buf, param_type);
+
+                                /* Track typedef usage in parameter type */
+                                track_typedef_usage(&param->type);
+
+                                /* Add parameter name if available */
+                                if (param->v && (param->v & ~SYM_FIELD)) {
+                                    const char *param_name = get_tok_str(param->v, NULL);
+                                    strcat(params_buf, " ");
+                                    strcat(params_buf, param_name);
+                                }
+
+                                param = param->next;
+                            }
+
+                            fprintf(tcc_state->usage_output, "FUNCTION_DECL: %s, RETURN: %s, PARAMS: (%s), FILE: %s\n",
+                                    func_name, return_type_buf, params_buf, filename);
+                            fflush(tcc_state->usage_output);
+                        }
                     } else {
                         if (l == VT_CONST || (type.t & VT_STATIC))
                             r |= VT_CONST;
@@ -8869,6 +9312,11 @@ static int decl(int l)
                             /* uninitialized global variables may be overridden */
                             type.t |= VT_EXTERN;
                         decl_initializer_alloc(&type, &ad, r, has_init, v, l);
+
+                        /* Track typedef usage in global variable declaration for mincut */
+                        if (tcc_state->track_usage && tcc_state->usage_output && l == VT_CONST) {
+                            track_typedef_usage(&type);
+                        }
                     }
 
                     if (ad.alias_target && l == VT_CONST) {

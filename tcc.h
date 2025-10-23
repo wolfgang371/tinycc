@@ -468,6 +468,7 @@ typedef struct CString {
 typedef struct CType {
     int t;
     struct Sym *ref;
+    int typedef_token;  /* Original typedef token if this came from a typedef, 0 otherwise */
 } CType;
 
 /* constant value */
@@ -1013,6 +1014,10 @@ struct TCCState {
     /* -Wl options */
     char **link_argv;
     int link_argc, link_optind;
+
+    /* usage tracking for mincut stub generation */
+    unsigned char track_usage;  /* if true, track symbol usage */
+    FILE *usage_output;         /* output file for usage tracking */
 };
 
 struct filespec {
