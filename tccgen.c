@@ -9097,6 +9097,50 @@ static int decl(int l)
                 type.t &= ~VT_EXTERN;
                 sym = external_sym(v, &type, 0, &ad);
 
+                /* Track function definition for mincut */
+                if (tcc_state->track_usage && tcc_state->usage_output) {
+                    const char *func_name = get_tok_str(v, NULL);
+                    char return_type_buf[256];
+                    char params_buf[1024];
+                    const char *filename = file ? file->filename : "<unknown>";
+
+                    /* Get return type - preserve typedef names */
+                    type_to_str_preserve_typedef(return_type_buf, sizeof(return_type_buf), &type.ref->type, NULL);
+
+                    /* Track typedef usage in return type */
+                    track_typedef_usage(&type.ref->type);
+
+                    /* Get parameters */
+                    params_buf[0] = '\0';
+                    Sym *param = type.ref->next;
+                    int first = 1;
+                    while (param) {
+                        if (!first) strcat(params_buf, ", ");
+                        first = 0;
+
+                        char param_type[256];
+                        /* Preserve typedef names in parameters */
+                        type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, NULL);
+                        strcat(params_buf, param_type);
+
+                        /* Track typedef usage in parameter type */
+                        track_typedef_usage(&param->type);
+
+                        /* Add parameter name if available */
+                        if (param->v && (param->v & ~SYM_FIELD)) {
+                            const char *param_name = get_tok_str(param->v, NULL);
+                            strcat(params_buf, " ");
+                            strcat(params_buf, param_name);
+                        }
+
+                        param = param->next;
+                    }
+
+                    fprintf(tcc_state->usage_output, "FUNCTION_DECL: %s, RETURN: %s, PARAMS: (%s), FILE: %s\n",
+                            func_name, return_type_buf, params_buf, filename);
+                    fflush(tcc_state->usage_output);
+                }
+
                 /* reject abstract declarators in function definition
                    make old-style float params double */
                 for (sa = sym->type.ref; (sa = sa->next) != NULL;) {
@@ -9316,6 +9360,51 @@ static int decl(int l)
                         /* Track typedef usage in global variable declaration for mincut */
                         if (tcc_state->track_usage && tcc_state->usage_output && l == VT_CONST) {
                             track_typedef_usage(&type);
+                        }
+
+                        /* Track static/inline function declarations for mincut */
+                        if (tcc_state->track_usage && tcc_state->usage_output &&
+                            (type.t & VT_BTYPE) == VT_FUNC) {
+                            const char *func_name = get_tok_str(v, NULL);
+                            char return_type_buf[256];
+                            char params_buf[1024];
+                            const char *filename = file ? file->filename : "<unknown>";
+
+                            /* Get return type - preserve typedef names */
+                            type_to_str_preserve_typedef(return_type_buf, sizeof(return_type_buf), &type.ref->type, NULL);
+
+                            /* Track typedef usage in return type */
+                            track_typedef_usage(&type.ref->type);
+
+                            /* Get parameters */
+                            params_buf[0] = '\0';
+                            Sym *param = type.ref->next;
+                            int first = 1;
+                            while (param) {
+                                if (!first) strcat(params_buf, ", ");
+                                first = 0;
+
+                                char param_type[256];
+                                /* Preserve typedef names in parameters */
+                                type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, NULL);
+                                strcat(params_buf, param_type);
+
+                                /* Track typedef usage in parameter type */
+                                track_typedef_usage(&param->type);
+
+                                /* Add parameter name if available */
+                                if (param->v && (param->v & ~SYM_FIELD)) {
+                                    const char *param_name = get_tok_str(param->v, NULL);
+                                    strcat(params_buf, " ");
+                                    strcat(params_buf, param_name);
+                                }
+
+                                param = param->next;
+                            }
+
+                            fprintf(tcc_state->usage_output, "FUNCTION_DECL: %s, RETURN: %s, PARAMS: (%s), FILE: %s\n",
+                                    func_name, return_type_buf, params_buf, filename);
+                            fflush(tcc_state->usage_output);
                         }
                     }
 
