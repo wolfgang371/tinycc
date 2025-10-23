@@ -6015,6 +6015,18 @@ ST_FUNC void unary(void)
             test_lvalue();
         if (vtop->sym)
           vtop->sym->a.addrtaken = 1;
+
+        /* Track function address being taken for mincut */
+        if (tcc_state->track_usage && tcc_state->usage_output) {
+            if ((vtop->type.t & VT_BTYPE) == VT_FUNC && vtop->sym) {
+                const char *func_name = get_tok_str(vtop->sym->v, NULL);
+                const char *filename = file ? file->filename : "<unknown>";
+                fprintf(tcc_state->usage_output, "FUNCTION_USAGE: %s, FILE: %s\n",
+                        func_name, filename);
+                fflush(tcc_state->usage_output);
+            }
+        }
+
         mk_pointer(&vtop->type);
         gaddrof();
         break;
