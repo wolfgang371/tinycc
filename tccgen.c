@@ -227,6 +227,18 @@ static void emit_type_dependencies(CType *type, int needs_complete_type)
     if (!tcc_state->track_usage || !tcc_state->usage_output || !type)
         return;
 
+    /* Check for typedef reference FIRST, before checking pointer/array/struct
+     * This is critical for function pointer typedefs like "think_t" where the underlying
+     * type is a pointer, but we need to emit the typedef dependency */
+    if (type->typedef_token) {
+        const char *typedef_name = get_tok_str(type->typedef_token, NULL);
+        /* Emit dependency on the typedef itself */
+        fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
+        /* Note: We don't need to recurse further because the typedef itself
+         * will have its own dependencies tracked when it's declared */
+        return;
+    }
+
     /* For pointers, we only need forward declarations, not complete types
      * Exception: if the pointer is dereferenced (checked elsewhere), then we need complete type
      * For now, we treat pointers as not needing complete types */
@@ -246,13 +258,21 @@ static void emit_type_dependencies(CType *type, int needs_complete_type)
         return;
     }
 
-    /* For pointers, check the referent's typedef FIRST before checking struct
-     * This handles cases like "mobjinfo_t *" where mobjinfo_t is a typedef of an anonymous struct
-     * We want to emit DEPENDS_ON: TYPEDEF:mobjinfo_t, not try to find the anonymous struct */
-    if (is_pointer && type->ref && type->ref->type.typedef_token) {
-        const char *typedef_name = get_tok_str(type->ref->type.typedef_token, NULL);
-        fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
-        /* Done - we emitted the typedef dependency, which will have its own dependencies */
+    /* For pointers, we DON'T need complete types - forward declarations are sufficient!
+     * Pointers don't create ordering dependencies - they only need the type name to be
+     * visible, which is handled by the symbol table lookup at FIELD_DECL emission.
+     * This avoids circular dependencies (e.g., line_s -> sector_t -> sector_s -> line_s)
+     *
+     * EXCEPTION: If the pointer's target type is an anonymous typedef struct (typedef_token
+     * is set on the ref type), we MUST emit a dependency because anonymous typedef structs
+     * cannot be forward-declared. E.g., "state_t *" requires state_t to be defined first. */
+    if (is_pointer) {
+        /* Check if pointer target has a typedef token (anonymous typedef struct) */
+        if (type->ref && type->ref->type.typedef_token) {
+            const char *typedef_name = get_tok_str(type->ref->type.typedef_token, NULL);
+            fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
+        }
+        /* Pointers don't create ordering dependencies for named structs */
         return;
     }
 
@@ -272,22 +292,6 @@ static void emit_type_dependencies(CType *type, int needs_complete_type)
                 }
             }
         }
-        return;
-    }
-
-    /* Check for typedef reference */
-    if (type->typedef_token) {
-        const char *typedef_name = get_tok_str(type->typedef_token, NULL);
-        /* Emit dependency on the typedef itself */
-        fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
-        /* Note: We don't need to recurse further because the typedef itself
-         * will have its own dependencies tracked when it's declared */
-        return;
-    }
-
-    /* For pointers (without typedef referents), check what they point to */
-    if (is_pointer && type->ref) {
-        emit_type_dependencies(&type->ref->type, 0);
         return;
     }
 
@@ -4955,6 +4959,7 @@ do_decl:
                             const char *struct_name = get_tok_str(s->v & ~SYM_STRUCT, NULL);
                             const char *field_name = get_tok_str(v, NULL);
                             char type_buf[256];
+                            const char *preserved_typedef = NULL;  /* Option A: preserve typedef token */
 
                             /* Check if this is an array field */
                             int is_array = (type1.t & (VT_ARRAY|VT_VLA));
@@ -4963,6 +4968,7 @@ do_decl:
                             if (is_array && type1.ref && type1.ref->type.typedef_token) {
                                 /* Array of typedef'd type: get typedef name and array dimensions */
                                 const char *typedef_name = get_tok_str(type1.ref->type.typedef_token, NULL);
+                                preserved_typedef = typedef_name;  /* Save for dependency tracking */
 
                                 /* Get array dimensions by calling type_to_str with field name */
                                 char full_array_str[256];
@@ -4980,10 +4986,12 @@ do_decl:
                             } else if (type1.typedef_token && !is_array) {
                                 /* Non-array typedef'd type */
                                 const char *typedef_name = get_tok_str(type1.typedef_token, NULL);
+                                preserved_typedef = typedef_name;  /* Save for dependency tracking */
                                 snprintf(type_buf, sizeof(type_buf), "%s", typedef_name);
                             } else if (((type1.t & VT_BTYPE) == VT_PTR) && !is_array && type1.ref && type1.ref->type.typedef_token) {
                                 /* Pointer to typedef'd type */
                                 const char *typedef_name = get_tok_str(type1.ref->type.typedef_token, NULL);
+                                preserved_typedef = typedef_name;  /* Save for dependency tracking */
                                 snprintf(type_buf, sizeof(type_buf), "%s *", typedef_name);
                             } else {
                                 /* No typedef info, use type_to_str */
@@ -5023,6 +5031,22 @@ do_decl:
                             const char *filename = file ? file->filename : "<unknown>";
                             fprintf(tcc_state->usage_output, "FIELD_DECL: %s.%s, TYPE: %s, FILE: %s",
                                     struct_name, field_name, type_buf, filename);
+
+                            /* Option A: Emit preserved typedef dependency BEFORE emit_type_dependencies
+                             * This handles pointers to typedefs where typedef_token is lost in the pointer type.
+                             * For pointers, we DON'T emit dependency (forward decl suffices) EXCEPT when
+                             * the pointer is to an anonymous typedef struct (like state_t) which can't be
+                             * forward declared. We emit dependency for ALL typedef pointers and let the
+                             * topological sort handle it. */
+                            if (preserved_typedef && ((type1.t & VT_BTYPE) != VT_PTR)) {
+                                /* Non-pointer typedef: emit dependency (needs complete type) */
+                                fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", preserved_typedef);
+                            } else if (preserved_typedef && ((type1.t & VT_BTYPE) == VT_PTR)) {
+                                /* Pointer to typedef: emit dependency to ensure typedef is defined
+                                 * This is critical for anonymous struct typedefs that can't be forward-declared */
+                                fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", preserved_typedef);
+                            }
+
                             /* Emit type dependencies for global topological sorting */
                             emit_type_dependencies(&type1, 1);  /* Fields need complete types */
                             fprintf(tcc_state->usage_output, "\n");
@@ -9500,11 +9524,12 @@ static int decl(int l)
                             char type_buf[256];
                             const char *filename = file ? file->filename : "<unknown>";
                             type_to_str(type_buf, sizeof(type_buf), &type, NULL);
-                            fprintf(tcc_state->usage_output, "TYPEDEF_DECL: %s, TYPE: %s, FILE: %s",
+                            fprintf(tcc_state->usage_output, "TYPEDEF_DECL: %s, TYPE: %s, FILE: %s\n",
                                     typedef_name, type_buf, filename);
-                            /* Emit type dependencies for global topological sorting */
-                            emit_type_dependencies(&type, 1);  /* Typedefs need complete types */
-                            fprintf(tcc_state->usage_output, "\n");
+                            /* NOTE: We don't emit dependencies for typedef declarations because:
+                             * 1. type.typedef_token points to the typedef itself (self-reference)
+                             * 2. Typedef dependencies are tracked through FIELD_DECL usage instead
+                             * 3. This avoids self-dependency cycles in topological sort */
                             fflush(tcc_state->usage_output);
                         }
                     }
