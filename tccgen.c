@@ -221,6 +221,80 @@ static void track_symbol_usage(const char *name, const char *context)
     fflush(tcc_state->usage_output);
 }
 
+/* Emit explicit type dependencies for global topological sorting */
+static void emit_type_dependencies(CType *type, int needs_complete_type)
+{
+    if (!tcc_state->track_usage || !tcc_state->usage_output || !type)
+        return;
+
+    /* For pointers, we only need forward declarations, not complete types
+     * Exception: if the pointer is dereferenced (checked elsewhere), then we need complete type
+     * For now, we treat pointers as not needing complete types */
+    int is_pointer = ((type->t & VT_BTYPE) == VT_PTR);
+    int is_array = (type->t & (VT_ARRAY|VT_VLA));
+
+    /* Arrays ALWAYS need complete element type */
+    if (is_array && type->ref) {
+        /* Check if array element has a typedef */
+        if (type->ref->type.typedef_token) {
+            const char *typedef_name = get_tok_str(type->ref->type.typedef_token, NULL);
+            fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
+            return;
+        }
+        /* Otherwise, recursively check element type dependencies */
+        emit_type_dependencies(&type->ref->type, 1);
+        return;
+    }
+
+    /* For pointers, check the referent's typedef FIRST before checking struct
+     * This handles cases like "mobjinfo_t *" where mobjinfo_t is a typedef of an anonymous struct
+     * We want to emit DEPENDS_ON: TYPEDEF:mobjinfo_t, not try to find the anonymous struct */
+    if (is_pointer && type->ref && type->ref->type.typedef_token) {
+        const char *typedef_name = get_tok_str(type->ref->type.typedef_token, NULL);
+        fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
+        /* Done - we emitted the typedef dependency, which will have its own dependencies */
+        return;
+    }
+
+    /* Check for struct/union reference (before checking our own typedef_token)
+     * This is important for typedef declarations like "typedef struct foo_s foo_t;"
+     * where type.typedef_token points to foo_t (self-reference) but we want to emit STRUCT:foo_s */
+    if ((type->t & VT_BTYPE) == VT_STRUCT) {
+        if (type->ref && type->ref->v) {
+            const char *tag_name = get_tok_str(type->ref->v & ~SYM_FIELD, NULL);
+            /* Skip anonymous or compiler-generated names */
+            if (tag_name && tag_name[0] != '\0' &&
+                !(tag_name[0] == 'L' && tag_name[1] == '.')) {
+                if (IS_UNION(type->t)) {
+                    fprintf(tcc_state->usage_output, ", DEPENDS_ON: UNION:%s", tag_name);
+                } else {
+                    fprintf(tcc_state->usage_output, ", DEPENDS_ON: STRUCT:%s", tag_name);
+                }
+            }
+        }
+        return;
+    }
+
+    /* Check for typedef reference */
+    if (type->typedef_token) {
+        const char *typedef_name = get_tok_str(type->typedef_token, NULL);
+        /* Emit dependency on the typedef itself */
+        fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
+        /* Note: We don't need to recurse further because the typedef itself
+         * will have its own dependencies tracked when it's declared */
+        return;
+    }
+
+    /* For pointers (without typedef referents), check what they point to */
+    if (is_pointer && type->ref) {
+        emit_type_dependencies(&type->ref->type, 0);
+        return;
+    }
+
+    /* For enums, we could track them too, but they don't have ordering dependencies */
+    /* Basic types (int, char, etc.) have no dependencies */
+}
+
 static void track_field_usage_with_type(const char *struct_name, const char *field_name,
                                          int is_arrow, CType *field_type)
 {
@@ -228,22 +302,76 @@ static void track_field_usage_with_type(const char *struct_name, const char *fie
     if (!tcc_state->track_usage || !tcc_state->usage_output)
         return;
 
-    /* Check if field type has typedef token */
-    if (field_type->typedef_token) {
+    /* Check if this is an array field */
+    int is_array = (field_type->t & (VT_ARRAY|VT_VLA));
+
+    /* For arrays, check if element type has typedef token */
+    if (is_array && field_type->ref && field_type->ref->type.typedef_token) {
+        /* Array of typedef'd type: get typedef name and array dimensions */
+        const char *typedef_name = get_tok_str(field_type->ref->type.typedef_token, NULL);
+
+        /* Get array dimensions by calling type_to_str with field name */
+        char full_array_str[256];
+        type_to_str(full_array_str, sizeof(full_array_str), field_type, field_name);
+
+        /* Extract just the array dimensions part: "type name[N]" -> "[N]" */
+        char *bracket_pos = strchr(full_array_str, '[');
+        if (bracket_pos) {
+            /* Output as: "typedef_name [dimensions]" */
+            snprintf(type_buf, sizeof(type_buf), "%s %s", typedef_name, bracket_pos);
+        } else {
+            /* Fallback if bracket not found */
+            snprintf(type_buf, sizeof(type_buf), "%s", typedef_name);
+        }
+    } else if (field_type->typedef_token && !is_array) {
+        /* Non-array typedef'd type */
         const char *typedef_name = get_tok_str(field_type->typedef_token, NULL);
         snprintf(type_buf, sizeof(type_buf), "%s", typedef_name);
-    } else if (((field_type->t & VT_BTYPE) == VT_PTR) && field_type->ref && field_type->ref->type.typedef_token) {
-        /* For pointer types, check if the pointed-to type has a typedef name */
+    } else if (((field_type->t & VT_BTYPE) == VT_PTR) && !is_array && field_type->ref && field_type->ref->type.typedef_token) {
+        /* Pointer to typedef'd type */
         const char *typedef_name = get_tok_str(field_type->ref->type.typedef_token, NULL);
         snprintf(type_buf, sizeof(type_buf), "%s *", typedef_name);
     } else {
         /* No typedef info, use type_to_str */
-        type_to_str(type_buf, sizeof(type_buf), field_type, NULL);
+        type_to_str(type_buf, sizeof(type_buf), field_type, is_array ? field_name : NULL);
+
+        /* For arrays without typedef, extract type and array suffix from type_buf */
+        /* type_buf contains: "type field_name[N]" for arrays */
+        if (is_array) {
+            char *bracket_pos = strchr(type_buf, '[');
+            if (bracket_pos) {
+                /* Find where fieldname starts (after last space before '[') */
+                char *name_start = bracket_pos - 1;
+                while (name_start > type_buf && *name_start != ' ') {
+                    name_start--;
+                }
+                if (*name_start == ' ') name_start++;
+
+                /* Extract type part (everything before name) */
+                int type_len = name_start - type_buf;
+                char type_part[256];
+                strncpy(type_part, type_buf, type_len);
+                type_part[type_len] = '\0';
+                /* Trim trailing space from type */
+                while (type_len > 0 && type_part[type_len-1] == ' ') {
+                    type_part[--type_len] = '\0';
+                }
+
+                /* Array suffix is from '[' to end */
+                const char *array_suffix = bracket_pos;
+
+                /* Output as: "type array_suffix" */
+                snprintf(type_buf, sizeof(type_buf), "%s %s", type_part, array_suffix);
+            }
+        }
     }
 
     const char *filename = file ? file->filename : "<unknown>";
-    fprintf(tcc_state->usage_output, "FIELD: %s%s%s, TYPE: %s, FILE: %s\n",
+    fprintf(tcc_state->usage_output, "FIELD: %s%s%s, TYPE: %s, FILE: %s",
             struct_name, is_arrow ? "->" : ".", field_name, type_buf, filename);
+    /* Emit type dependencies for global topological sorting */
+    emit_type_dependencies(field_type, 1);  /* Fields need complete types */
+    fprintf(tcc_state->usage_output, "\n");
     fflush(tcc_state->usage_output);
 }
 
@@ -4828,22 +4956,76 @@ do_decl:
                             const char *field_name = get_tok_str(v, NULL);
                             char type_buf[256];
 
-                            /* Check if field type has typedef token (preserve typedef names) */
-                            if (type1.typedef_token) {
+                            /* Check if this is an array field */
+                            int is_array = (type1.t & (VT_ARRAY|VT_VLA));
+
+                            /* For arrays, check if element type has typedef token */
+                            if (is_array && type1.ref && type1.ref->type.typedef_token) {
+                                /* Array of typedef'd type: get typedef name and array dimensions */
+                                const char *typedef_name = get_tok_str(type1.ref->type.typedef_token, NULL);
+
+                                /* Get array dimensions by calling type_to_str with field name */
+                                char full_array_str[256];
+                                type_to_str(full_array_str, sizeof(full_array_str), &type1, field_name);
+
+                                /* Extract just the array dimensions part: "type name[N]" -> "[N]" */
+                                char *bracket_pos = strchr(full_array_str, '[');
+                                if (bracket_pos) {
+                                    /* Output as: "typedef_name [dimensions]" */
+                                    snprintf(type_buf, sizeof(type_buf), "%s %s", typedef_name, bracket_pos);
+                                } else {
+                                    /* Fallback if bracket not found */
+                                    snprintf(type_buf, sizeof(type_buf), "%s", typedef_name);
+                                }
+                            } else if (type1.typedef_token && !is_array) {
+                                /* Non-array typedef'd type */
                                 const char *typedef_name = get_tok_str(type1.typedef_token, NULL);
                                 snprintf(type_buf, sizeof(type_buf), "%s", typedef_name);
-                            } else if (((type1.t & VT_BTYPE) == VT_PTR) && type1.ref && type1.ref->type.typedef_token) {
-                                /* For pointer types, check if the pointed-to type has a typedef name */
+                            } else if (((type1.t & VT_BTYPE) == VT_PTR) && !is_array && type1.ref && type1.ref->type.typedef_token) {
+                                /* Pointer to typedef'd type */
                                 const char *typedef_name = get_tok_str(type1.ref->type.typedef_token, NULL);
                                 snprintf(type_buf, sizeof(type_buf), "%s *", typedef_name);
                             } else {
                                 /* No typedef info, use type_to_str */
-                                type_to_str(type_buf, sizeof(type_buf), &type1, NULL);
+                                type_to_str(type_buf, sizeof(type_buf), &type1, is_array ? field_name : NULL);
+
+                                /* For arrays without typedef, extract type and array suffix from type_buf */
+                                /* type_buf contains: "type field_name[N]" for arrays */
+                                if (is_array) {
+                                    char *bracket_pos = strchr(type_buf, '[');
+                                    if (bracket_pos) {
+                                        /* Find where fieldname starts (after last space before '[') */
+                                        char *name_start = bracket_pos - 1;
+                                        while (name_start > type_buf && *name_start != ' ') {
+                                            name_start--;
+                                        }
+                                        if (*name_start == ' ') name_start++;
+
+                                        /* Extract type part (everything before name) */
+                                        int type_len = name_start - type_buf;
+                                        char type_part[256];
+                                        strncpy(type_part, type_buf, type_len);
+                                        type_part[type_len] = '\0';
+                                        /* Trim trailing space from type */
+                                        while (type_len > 0 && type_part[type_len-1] == ' ') {
+                                            type_part[--type_len] = '\0';
+                                        }
+
+                                        /* Array suffix is from '[' to end */
+                                        const char *array_suffix = bracket_pos;
+
+                                        /* Output as: "type array_suffix" */
+                                        snprintf(type_buf, sizeof(type_buf), "%s %s", type_part, array_suffix);
+                                    }
+                                }
                             }
 
                             const char *filename = file ? file->filename : "<unknown>";
-                            fprintf(tcc_state->usage_output, "FIELD_DECL: %s.%s, TYPE: %s, FILE: %s\n",
+                            fprintf(tcc_state->usage_output, "FIELD_DECL: %s.%s, TYPE: %s, FILE: %s",
                                     struct_name, field_name, type_buf, filename);
+                            /* Emit type dependencies for global topological sorting */
+                            emit_type_dependencies(&type1, 1);  /* Fields need complete types */
+                            fprintf(tcc_state->usage_output, "\n");
                             fflush(tcc_state->usage_output);
                         }
 
@@ -5150,48 +5332,79 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                             /* Check if this is an array field */
                             int is_array = (field->type.t & (VT_ARRAY|VT_VLA));
 
-                            /* Preserve typedef names (don't expand) */
-                            if (field->type.typedef_token && !is_array) {
+                            /* For arrays, check if element type has typedef token */
+                            if (is_array && field->type.ref && field->type.ref->type.typedef_token) {
+                                /* Array of typedef'd type: get typedef name and array dimensions */
+                                const char *field_typedef_name = get_tok_str(field->type.ref->type.typedef_token, NULL);
+
+                                /* Get array dimensions by calling type_to_str with field name */
+                                char full_array_str[256];
+                                type_to_str(full_array_str, sizeof(full_array_str), &field->type, field_name);
+
+                                /* Extract just the array dimensions part: "type name[N]" -> "[N]" */
+                                char *bracket_pos = strchr(full_array_str, '[');
+                                if (bracket_pos) {
+                                    /* Output as: "typedef_name [dimensions]" */
+                                    snprintf(field_type_buf, sizeof(field_type_buf), "%s %s", field_typedef_name, bracket_pos);
+                                } else {
+                                    /* Fallback if bracket not found */
+                                    snprintf(field_type_buf, sizeof(field_type_buf), "%s", field_typedef_name);
+                                }
+                            } else if (field->type.typedef_token && !is_array) {
+                                /* Non-array typedef'd type */
                                 const char *field_typedef_name = get_tok_str(field->type.typedef_token, NULL);
                                 snprintf(field_type_buf, sizeof(field_type_buf), "%s", field_typedef_name);
                             } else if (((field->type.t & VT_BTYPE) == VT_PTR) && !is_array && field->type.ref && field->type.ref->type.typedef_token) {
-                                /* For pointer types, check if the pointed-to type has a typedef name */
+                                /* Pointer to typedef'd type */
                                 const char *field_typedef_name = get_tok_str(field->type.ref->type.typedef_token, NULL);
                                 snprintf(field_type_buf, sizeof(field_type_buf), "%s *", field_typedef_name);
                             } else {
-                                /* Use type_to_str with field name for arrays */
+                                /* No typedef info, use type_to_str */
                                 type_to_str(field_type_buf, sizeof(field_type_buf), &field->type, is_array ? field_name : NULL);
                             }
 
                             /* For arrays, extract type and array suffix from field_type_buf */
-                            /* field_type_buf contains: "type field_name[N]" */
+                            /* field_type_buf may contain either:
+                             * - "typedef_name [N]" (from typedef array handling above)
+                             * - "type field_name[N]" (from type_to_str for non-typedef arrays)
+                             */
                             if (is_array) {
-                                /* Extract the array suffix from field_type_buf */
-                                /* Format is: "type fieldname[N]" or "type fieldname[N][M]" */
                                 char *bracket_pos = strchr(field_type_buf, '[');
                                 if (bracket_pos) {
-                                    /* Find where fieldname starts (after last space before '[') */
-                                    char *name_start = bracket_pos - 1;
-                                    while (name_start > field_type_buf && *name_start != ' ') {
-                                        name_start--;
+                                    /* Check if field_type_buf already has correct format (typedef case) */
+                                    /* In typedef case: "fixed_t [4]" - field name NOT present in string */
+                                    /* In non-typedef case: "int bbox[4]" - field name IS present */
+                                    char *field_name_in_buf = strstr(field_type_buf, field_name);
+                                    _Bool is_typedef_format = (field_name_in_buf == NULL) || (field_name_in_buf >= bracket_pos);
+
+                                    if (is_typedef_format) {
+                                        /* Already formatted as "typedef_name [dimensions]", just output */
+                                        fprintf(tcc_state->usage_output, " %s: %s;", field_name, field_type_buf);
+                                    } else {
+                                        /* Need to extract: "type field_name[N]" -> "type [N]" */
+                                        /* Find where fieldname starts (after last space before '[') */
+                                        char *name_start = bracket_pos - 1;
+                                        while (name_start > field_type_buf && *name_start != ' ') {
+                                            name_start--;
+                                        }
+                                        if (*name_start == ' ') name_start++;
+
+                                        /* Extract type part (everything before name) */
+                                        int type_len = name_start - field_type_buf;
+                                        char type_part[256];
+                                        strncpy(type_part, field_type_buf, type_len);
+                                        type_part[type_len] = '\0';
+                                        /* Trim trailing space from type */
+                                        while (type_len > 0 && type_part[type_len-1] == ' ') {
+                                            type_part[--type_len] = '\0';
+                                        }
+
+                                        /* Array suffix is from '[' to end */
+                                        const char *array_suffix = bracket_pos;
+
+                                        /* Output as: field_name: type array_suffix */
+                                        fprintf(tcc_state->usage_output, " %s: %s %s;", field_name, type_part, array_suffix);
                                     }
-                                    if (*name_start == ' ') name_start++;
-
-                                    /* Extract type part (everything before name) */
-                                    int type_len = name_start - field_type_buf;
-                                    char type_part[256];
-                                    strncpy(type_part, field_type_buf, type_len);
-                                    type_part[type_len] = '\0';
-                                    /* Trim trailing space from type */
-                                    while (type_len > 0 && type_part[type_len-1] == ' ') {
-                                        type_part[--type_len] = '\0';
-                                    }
-
-                                    /* Array suffix is from '[' to end */
-                                    const char *array_suffix = bracket_pos;
-
-                                    /* Output as: field_name: type array_suffix */
-                                    fprintf(tcc_state->usage_output, " %s: %s %s;", field_name, type_part, array_suffix);
                                 } else {
                                     /* Shouldn't happen, but fallback */
                                     fprintf(tcc_state->usage_output, " %s: %s;", field_name, field_type_buf);
@@ -5202,7 +5415,18 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                         }
                         field = field->next;
                     }
-                    fprintf(tcc_state->usage_output, " }, FILE: %s\n", filename);
+                    fprintf(tcc_state->usage_output, " }, FILE: %s", filename);
+
+                    /* Emit type dependencies for global topological sorting */
+                    /* Second pass through fields to collect dependencies */
+                    field = s->type.ref->next;
+                    while (field) {
+                        if (field->v) {
+                            emit_type_dependencies(&field->type, 1);  /* Fields need complete types */
+                        }
+                        field = field->next;
+                    }
+                    fprintf(tcc_state->usage_output, "\n");
                 }
 
                 fflush(tcc_state->usage_output);
@@ -9276,8 +9500,11 @@ static int decl(int l)
                             char type_buf[256];
                             const char *filename = file ? file->filename : "<unknown>";
                             type_to_str(type_buf, sizeof(type_buf), &type, NULL);
-                            fprintf(tcc_state->usage_output, "TYPEDEF_DECL: %s, TYPE: %s, FILE: %s\n",
+                            fprintf(tcc_state->usage_output, "TYPEDEF_DECL: %s, TYPE: %s, FILE: %s",
                                     typedef_name, type_buf, filename);
+                            /* Emit type dependencies for global topological sorting */
+                            emit_type_dependencies(&type, 1);  /* Typedefs need complete types */
+                            fprintf(tcc_state->usage_output, "\n");
                             fflush(tcc_state->usage_output);
                         }
                     }

@@ -1700,7 +1700,25 @@ bad_twosharp:
     if (tcc_state->track_usage && tcc_state->usage_output && str.str) {
         const char *macro_name = get_tok_str(v, NULL);
         const char *filename = file ? file->filename : "<unknown>";
-        fprintf(tcc_state->usage_output, "MACRO_DECL: %s, VALUE: ", macro_name);
+        fprintf(tcc_state->usage_output, "MACRO_DECL: %s", macro_name);
+
+        /* Output parameter list for function-like macros */
+        if (t == MACRO_FUNC) {
+            fprintf(tcc_state->usage_output, "(");
+            Sym *param = first;
+            int first_param = 1;
+            while (param) {
+                if (!first_param)
+                    fprintf(tcc_state->usage_output, ", ");
+                const char *param_name = get_tok_str(param->v & ~SYM_FIELD, NULL);
+                fprintf(tcc_state->usage_output, "%s", param_name);
+                first_param = 0;
+                param = param->next;
+            }
+            fprintf(tcc_state->usage_output, ")");
+        }
+
+        fprintf(tcc_state->usage_output, ", VALUE: ");
 
         /* Output macro expansion tokens */
         const int *p = str.str;
