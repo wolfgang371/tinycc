@@ -1525,6 +1525,7 @@ static Sym *external_sym(int v, CType *type, int r, AttributeDef *ad)
         s->a = ad->a;
         s->asm_label = ad->asm_label;
         s->type.ref = type->ref;
+        s->type.typedef_token = type->typedef_token;  /* Preserve typedef name for mincut tracking */
     } else {
         patch_storage(s, ad, type);
     }
