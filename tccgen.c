@@ -9435,6 +9435,15 @@ static int decl(int l)
                         param = param->next;
                     }
 
+                    /* Check if function is variadic (has ...) */
+                    if (type.ref->f.func_type == FUNC_ELLIPSIS) {
+                        if (params_buf[0] != '\0') {
+                            strcat(params_buf, ", ...");
+                        } else {
+                            strcat(params_buf, "...");
+                        }
+                    }
+
                     fprintf(tcc_state->usage_output, "FUNCTION_DECL: %s, RETURN: %s, PARAMS: (%s), FILE: %s\n",
                             func_name, return_type_buf, params_buf, filename);
                     fflush(tcc_state->usage_output);
@@ -9643,6 +9652,15 @@ static int decl(int l)
                                 param = param->next;
                             }
 
+                            /* Check if function is variadic (has ...) */
+                            if (type.ref->f.func_type == FUNC_ELLIPSIS) {
+                                if (params_buf[0] != '\0') {
+                                    strcat(params_buf, ", ...");
+                                } else {
+                                    strcat(params_buf, "...");
+                                }
+                            }
+
                             fprintf(tcc_state->usage_output, "FUNCTION_DECL: %s, RETURN: %s, PARAMS: (%s), FILE: %s\n",
                                     func_name, return_type_buf, params_buf, filename);
                             fflush(tcc_state->usage_output);
@@ -9703,6 +9721,15 @@ static int decl(int l)
                                 }
 
                                 param = param->next;
+                            }
+
+                            /* Check if function is variadic (has ...) */
+                            if (type.ref->f.func_type == FUNC_ELLIPSIS) {
+                                if (params_buf[0] != '\0') {
+                                    strcat(params_buf, ", ...");
+                                } else {
+                                    strcat(params_buf, "...");
+                                }
                             }
 
                             fprintf(tcc_state->usage_output, "FUNCTION_DECL: %s, RETURN: %s, PARAMS: (%s), FILE: %s\n",
