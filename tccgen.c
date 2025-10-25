@@ -9678,6 +9678,36 @@ static int decl(int l)
                             type.t |= VT_EXTERN;
                         decl_initializer_alloc(&type, &ad, r, has_init, v, l);
 
+                        /* Track variable definitions (static, global, local) for mincut */
+                        if (tcc_state->track_usage && tcc_state->usage_output &&
+                            (type.t & VT_BTYPE) != VT_FUNC) {
+                            const char *var_name = get_tok_str(v, NULL);
+                            char type_buf[256];
+                            const char *filename = file ? file->filename : "<unknown>";
+                            const char *scope;
+
+                            /* Determine scope */
+                            if (type.t & VT_STATIC) {
+                                scope = "static";
+                            } else if (l == VT_CONST) {
+                                scope = "global";
+                            } else {
+                                scope = "local";
+                            }
+
+                            /* Get type string */
+                            if (type.typedef_token) {
+                                const char *typedef_name = get_tok_str(type.typedef_token, NULL);
+                                snprintf(type_buf, sizeof(type_buf), "%s", typedef_name);
+                            } else {
+                                type_to_str(type_buf, sizeof(type_buf), &type, NULL);
+                            }
+
+                            fprintf(tcc_state->usage_output, "VAR_DEF: %s, TYPE: %s, SCOPE: %s, FILE: %s\n",
+                                    var_name, type_buf, scope, filename);
+                            fflush(tcc_state->usage_output);
+                        }
+
                         /* Track typedef usage in global variable declaration for mincut */
                         if (tcc_state->track_usage && tcc_state->usage_output && l == VT_CONST) {
                             track_typedef_usage(&type);
