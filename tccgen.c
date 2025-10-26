@@ -213,26 +213,8 @@ static void type_to_str_preserve_typedef(char *buf, int buf_size, CType *type, c
 {
     int bt = type->t & VT_BTYPE;
 
-    /* Handle pointers recursively to preserve typedef in pointed-to type */
-    if (bt == VT_PTR && type->ref) {
-        char buf1[256];
-        char prefix[64] = "";
-
-        /* Add pointer qualifiers */
-        pstrcpy(buf1, sizeof(buf1), "*");
-        if (type->t & VT_CONSTANT)
-            pstrcat(buf1, sizeof(buf1), "const ");
-        if (type->t & VT_VOLATILE)
-            pstrcat(buf1, sizeof(buf1), "volatile ");
-        if (varstr)
-            pstrcat(buf1, sizeof(buf1), varstr);
-
-        /* Recursively preserve typedef in pointed-to type */
-        type_to_str_preserve_typedef(buf, buf_size, &type->ref->type, buf1);
-        return;
-    }
-
-    /* Check if this type came from a typedef */
+    /* Check if this type came from a typedef FIRST, before handling pointers */
+    /* This is important for typedef'd pointer types like va_list (typedef of struct * ) */
     if (type->typedef_token) {
         /* Use the original typedef name */
         const char *typedef_name = get_tok_str(type->typedef_token, NULL);
@@ -249,6 +231,25 @@ static void type_to_str_preserve_typedef(char *buf, int buf_size, CType *type, c
             typedef_name,
             varstr ? " " : "",
             varstr ? varstr : "");
+        return;
+    }
+
+    /* Handle pointers recursively to preserve typedef in pointed-to type */
+    if (bt == VT_PTR && type->ref) {
+        char buf1[256];
+        char prefix[64] = "";
+
+        /* Add pointer qualifiers */
+        pstrcpy(buf1, sizeof(buf1), "*");
+        if (type->t & VT_CONSTANT)
+            pstrcat(buf1, sizeof(buf1), "const ");
+        if (type->t & VT_VOLATILE)
+            pstrcat(buf1, sizeof(buf1), "volatile ");
+        if (varstr)
+            pstrcat(buf1, sizeof(buf1), varstr);
+
+        /* Recursively preserve typedef in pointed-to type */
+        type_to_str_preserve_typedef(buf, buf_size, &type->ref->type, buf1);
         return;
     }
 
@@ -9742,8 +9743,8 @@ static int decl(int l)
                     sym->a = ad.a;
 
                     /* Track typedef declaration for mincut */
-                    /* Skip anonymous struct/union/enum typedefs - they're tracked by TYPEDEF_STRUCT */
-                    /* EXCEPT: Always emit typedef aliases (typedef existing_typedef new_name) */
+                    /* Emit TYPEDEF_DECL for ALL typedefs to track declaration file */
+                    /* Anonymous struct/union typedefs also emit TYPEDEF_STRUCT during usage */
                     /* Anonymous means: tag name is NULL, empty, or compiler-generated (starts with "L.") */
                     if (tcc_state->track_usage && tcc_state->usage_output) {
                         int is_struct_or_union = ((type.t & VT_BTYPE) == VT_STRUCT || (type.t & VT_BTYPE) == VT_UNION);
@@ -9754,11 +9755,10 @@ static int decl(int l)
                         int is_anon_struct = is_struct_or_union && type.ref && is_truly_anonymous;
                         int is_anon_enum = is_enum && type.ref && is_truly_anonymous;
 
-                        /* Emit TYPEDEF_DECL if:
-                         * 1. Not an anonymous struct/enum (inline definition), OR
-                         * 2. It's a typedef alias (typedef old_name new_name)
+                        /* Emit TYPEDEF_DECL for ALL typedefs (including anonymous structs)
+                         * This tracks the declaration file, which is needed for symbol filtering
                          */
-                        if (!is_anon_struct && !is_anon_enum || is_typedef_alias) {
+                        if (1) {
                             const char *typedef_name = get_tok_str(v, NULL);
                             const char *filename = file ? file->filename : "<unknown>";
 
