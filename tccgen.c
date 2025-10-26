@@ -9502,6 +9502,10 @@ static int decl(int l)
 		} else if (type.t & VT_TYPEDEF) {
                     /* save typedefed type  */
                     /* XXX: test storage specifiers ? */
+                    /* Check if this is a typedef alias (typedef existing_typedef new_name) */
+                    /* If type.typedef_token is already set, this came from an existing typedef */
+                    int is_typedef_alias = (type.typedef_token != 0);
+                    int original_typedef_token = type.typedef_token;  /* Save before overwriting */
                     /* Set typedef_token so we can preserve the typedef name later */
                     type.typedef_token = v;
                     sym = sym_find(v);
@@ -9518,6 +9522,7 @@ static int decl(int l)
 
                     /* Track typedef declaration for mincut */
                     /* Skip anonymous struct/union/enum typedefs - they're tracked by TYPEDEF_STRUCT */
+                    /* EXCEPT: Always emit typedef aliases (typedef existing_typedef new_name) */
                     /* Anonymous means: tag name is NULL, empty, or compiler-generated (starts with "L.") */
                     if (tcc_state->track_usage && tcc_state->usage_output) {
                         int is_struct_or_union = ((type.t & VT_BTYPE) == VT_STRUCT || (type.t & VT_BTYPE) == VT_UNION);
@@ -9528,13 +9533,26 @@ static int decl(int l)
                         int is_anon_struct = is_struct_or_union && type.ref && is_truly_anonymous;
                         int is_anon_enum = is_enum && type.ref && is_truly_anonymous;
 
-                        if (!is_anon_struct && !is_anon_enum) {
+                        /* Emit TYPEDEF_DECL if:
+                         * 1. Not an anonymous struct/enum (inline definition), OR
+                         * 2. It's a typedef alias (typedef old_name new_name)
+                         */
+                        if (!is_anon_struct && !is_anon_enum || is_typedef_alias) {
                             const char *typedef_name = get_tok_str(v, NULL);
-                            char type_buf[256];
                             const char *filename = file ? file->filename : "<unknown>";
-                            type_to_str(type_buf, sizeof(type_buf), &type, NULL);
-                            fprintf(tcc_state->usage_output, "TYPEDEF_DECL: %s, TYPE: %s, FILE: %s\n",
-                                    typedef_name, type_buf, filename);
+
+                            /* If it's a typedef alias, emit the original typedef name */
+                            /* e.g., "typedef post_t column_t" instead of "typedef struct <anonymous> column_t" */
+                            if (is_typedef_alias) {
+                                const char *original_typedef_name = get_tok_str(original_typedef_token, NULL);
+                                fprintf(tcc_state->usage_output, "TYPEDEF_DECL: %s, TYPE: typedef %s, FILE: %s\n",
+                                        typedef_name, original_typedef_name, filename);
+                            } else {
+                                char type_buf[256];
+                                type_to_str(type_buf, sizeof(type_buf), &type, NULL);
+                                fprintf(tcc_state->usage_output, "TYPEDEF_DECL: %s, TYPE: %s, FILE: %s\n",
+                                        typedef_name, type_buf, filename);
+                            }
                             /* NOTE: We don't emit dependencies for typedef declarations because:
                              * 1. type.typedef_token points to the typedef itself (self-reference)
                              * 2. Typedef dependencies are tracked through FIELD_DECL usage instead
