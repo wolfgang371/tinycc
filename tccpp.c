@@ -1553,6 +1553,16 @@ static int parse_include(TCCState *s1, int do_next, int test)
 #ifdef INC_DEBUG
         printf("%s: including %s\n", file->prev->filename, file->filename);
 #endif
+        /* track include for isolation */
+        if (tcc_state && tcc_state->usage_output) {
+            const char *include_type = (c == '<') ? "system" : "local";
+            fprintf(tcc_state->usage_output,
+                "{\"event\":\"INCLUDE\",\"file\":\"%s\",\"included\":\"%s\",\"included_path\":\"%s\",\"type\":\"%s\"}\n",
+                file->prev->filename,  /* file that contains the #include */
+                name,                  /* include name as written (e.g., "SDL2/SDL.h") */
+                buf,                   /* full resolved path */
+                include_type);         /* "system" (<>) or "local" ("") */
+        }
         /* update target deps */
         if (s1->gen_deps) {
             BufferedFile *bf = file;
