@@ -9891,8 +9891,27 @@ static int decl(int l)
                                 if (param->v && (param->v & ~SYM_FIELD)) {
                                     param_name = get_tok_str(param->v, NULL);
                                 }
-                                /* Preserve typedef names in parameters (includes param name for function pointers) */
-                                type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, param_name);
+
+                                /* Check for function parameter arrays: uint32_t buf[4] becomes VT_PTR with ref->c=4 */
+                                /* In C, func(int arr[4]) is equivalent to func(int *arr), but TCC stores the dimension */
+                                int param_bt = param->type.t & VT_BTYPE;
+                                /* Check if element type is struct/union (e.g., va_list -> __va_list_tag[1]) */
+                                /* For these, preserve the typedef name instead of expanding to array notation */
+                                int elem_is_struct = (param->type.ref &&
+                                                      ((param->type.ref->type.t & VT_BTYPE) == VT_STRUCT ||
+                                                       IS_UNION(param->type.ref->type.t)));
+                                if (param->type.ref && param->type.ref->c > 0 &&
+                                    param_bt == VT_PTR && !elem_is_struct) {
+                                    /* Function parameter array - get element type with qualifiers from ref->type */
+                                    char elem_type[200];
+                                    /* For arrays, get the element type (which is the pointed-to type) */
+                                    type_to_str_preserve_typedef(elem_type, sizeof(elem_type), &param->type.ref->type, NULL);
+                                    snprintf(param_type, sizeof(param_type), "%s %s[%d]",
+                                             elem_type, param_name ? param_name : "", param->type.ref->c);
+                                } else {
+                                    /* Regular parameter or typedef - use typedef name if available */
+                                    type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, param_name);
+                                }
                                 strcat(params_buf, param_type);
 
                                 /* Track typedef usage in parameter type */
@@ -9998,8 +10017,27 @@ static int decl(int l)
                                 if (param->v && (param->v & ~SYM_FIELD)) {
                                     param_name = get_tok_str(param->v, NULL);
                                 }
-                                /* Preserve typedef names in parameters (includes param name for function pointers) */
-                                type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, param_name);
+
+                                /* Check for function parameter arrays: uint32_t buf[4] becomes VT_PTR with ref->c=4 */
+                                /* In C, func(int arr[4]) is equivalent to func(int *arr), but TCC stores the dimension */
+                                int param_bt = param->type.t & VT_BTYPE;
+                                /* Check if element type is struct/union (e.g., va_list -> __va_list_tag[1]) */
+                                /* For these, preserve the typedef name instead of expanding to array notation */
+                                int elem_is_struct = (param->type.ref &&
+                                                      ((param->type.ref->type.t & VT_BTYPE) == VT_STRUCT ||
+                                                       IS_UNION(param->type.ref->type.t)));
+                                if (param->type.ref && param->type.ref->c > 0 &&
+                                    param_bt == VT_PTR && !elem_is_struct) {
+                                    /* Function parameter array - get element type with qualifiers from ref->type */
+                                    char elem_type[200];
+                                    /* For arrays, get the element type (which is the pointed-to type) */
+                                    type_to_str_preserve_typedef(elem_type, sizeof(elem_type), &param->type.ref->type, NULL);
+                                    snprintf(param_type, sizeof(param_type), "%s %s[%d]",
+                                             elem_type, param_name ? param_name : "", param->type.ref->c);
+                                } else {
+                                    /* Regular parameter or typedef - use typedef name if available */
+                                    type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, param_name);
+                                }
                                 strcat(params_buf, param_type);
 
                                 /* Track typedef usage in parameter type */
