@@ -6670,7 +6670,7 @@ special_math_val:
             if (!((s->type.t & VT_BTYPE) == VT_FUNC) && !(r == VT_CONST && IS_ENUM_VAL(s->type.t))) {
                 const char *var_name = get_tok_str(t, NULL);
                 char type_buf[256];
-                type_to_str(type_buf, sizeof(type_buf), &s->type, NULL);
+                type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &s->type, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
                 fprintf(tcc_state->usage_output, "VAR_USE: %s, TYPE: %s, FILE: %s, R: 0x%x\n",
                         var_name, type_buf, filename, r);
@@ -6694,7 +6694,7 @@ special_math_val:
                 if (!((s->type.t & VT_BTYPE) == VT_FUNC)) {
                     const char *var_name = get_tok_str(t, NULL);
                     char type_buf[256];
-                    type_to_str(type_buf, sizeof(type_buf), &s->type, NULL);
+                    type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &s->type, NULL);
                     const char *filename = file ? file->filename : "<unknown>";
                     fprintf(tcc_state->usage_output, "EXTERN: %s, TYPE: %s, FILE: %s\n",
                             var_name, type_buf, filename);
@@ -9618,8 +9618,8 @@ static int decl(int l)
                                 const char *typedef_name = get_tok_str(type.ref->type.typedef_token, NULL);
                                 snprintf(type_buf, sizeof(type_buf), "extern %s *", typedef_name);
                             } else {
-                                /* No typedef info, use type_to_str */
-                                type_to_str(type_buf, sizeof(type_buf), &type, NULL);
+                                /* No typedef info found via token, use type_to_str_preserve_typedef */
+                                type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &type, NULL);
                             }
 
                             fprintf(tcc_state->usage_output, "EXTERN_DECL: %s, TYPE: %s, FILE: %s\n",
