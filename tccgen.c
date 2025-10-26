@@ -213,8 +213,26 @@ static void type_to_str_preserve_typedef(char *buf, int buf_size, CType *type, c
 {
     int bt = type->t & VT_BTYPE;
 
-    /* Check if this type came from a typedef FIRST, before handling pointers */
-    /* This is important for typedef'd pointer types like va_list (typedef of struct * ) */
+    /* Handle arrays FIRST - arrays should show dimensions even if element type is typedef */
+    /* Arrays may have different basic types but always have VT_ARRAY or VT_VLA flag set */
+    /* Example: fixed_t arr[10] should be "fixed_t [10]" not just "fixed_t" */
+    if (type->ref && (type->t & (VT_ARRAY | VT_VLA))) {
+        Sym *s = type->ref;
+        char buf1[256];
+
+        /* Build array dimension string */
+        if (varstr && '*' == *varstr)
+            snprintf(buf1, sizeof(buf1), "(%s)[%d]", varstr, s->c);
+        else
+            snprintf(buf1, sizeof(buf1), "%s[%d]", varstr ? varstr : "", s->c);
+
+        /* Recursively preserve typedef in element type */
+        type_to_str_preserve_typedef(buf, buf_size, &s->type, buf1);
+        return;
+    }
+
+    /* Check if this type came from a typedef (for non-array types) */
+    /* This is important for typedef'd pointer types like va_list (typedef of struct *) */
     if (type->typedef_token) {
         /* Use the original typedef name */
         const char *typedef_name = get_tok_str(type->typedef_token, NULL);
@@ -9830,28 +9848,9 @@ static int decl(int l)
                             char type_buf[256];
                             const char *filename = file ? file->filename : "<unknown>";
 
-                            /* Preserve typedef names (don't expand) - check array FIRST */
-                            if ((type.t & VT_ARRAY) && type.ref) {
-                                /* For array types, get element type and array size */
-                                char elem_type_buf[200];
-                                if (type.ref->type.typedef_token) {
-                                    const char *typedef_name = get_tok_str(type.ref->type.typedef_token, NULL);
-                                    snprintf(elem_type_buf, sizeof(elem_type_buf), "%s", typedef_name);
-                                } else {
-                                    type_to_str(elem_type_buf, sizeof(elem_type_buf), &type.ref->type, NULL);
-                                }
-                                snprintf(type_buf, sizeof(type_buf), "extern %s [%d]", elem_type_buf, type.ref->c);
-                            } else if (type.typedef_token) {
-                                const char *typedef_name = get_tok_str(type.typedef_token, NULL);
-                                snprintf(type_buf, sizeof(type_buf), "extern %s", typedef_name);
-                            } else if (((type.t & VT_BTYPE) == VT_PTR) && type.ref && type.ref->type.typedef_token) {
-                                /* For pointer types, check if the pointed-to type has a typedef name */
-                                const char *typedef_name = get_tok_str(type.ref->type.typedef_token, NULL);
-                                snprintf(type_buf, sizeof(type_buf), "extern %s *", typedef_name);
-                            } else {
-                                /* No typedef info found via token, use type_to_str_preserve_typedef */
-                                type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &type, NULL);
-                            }
+                            /* Use type_to_str_preserve_typedef for all types */
+                            /* This handles arrays (including multidimensional), pointers, and typedefs correctly */
+                            type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &type, NULL);
 
                             JSON_START(tcc_state->usage_output, "EXTERN_DECL");
                             JSON_STR(tcc_state->usage_output, "name", var_name);
