@@ -160,6 +160,51 @@ static void end_switch(void);
 static void do_Static_assert(void);
 
 /* ------------------------------------------------------------------------- */
+/* JSON tracking output helpers */
+
+/* Escape a string for JSON output */
+static void json_escape_string(FILE *f, const char *s)
+{
+    if (!s) {
+        fputs("null", f);
+        return;
+    }
+
+    fputc('"', f);
+    while (*s) {
+        switch (*s) {
+            case '"':  fputs("\\\"", f); break;
+            case '\\': fputs("\\\\", f); break;
+            case '\n': fputs("\\n", f); break;
+            case '\r': fputs("\\r", f); break;
+            case '\t': fputs("\\t", f); break;
+            case '\b': fputs("\\b", f); break;
+            case '\f': fputs("\\f", f); break;
+            default:
+                if ((unsigned char)*s < 32) {
+                    fprintf(f, "\\u%04x", (unsigned char)*s);
+                } else {
+                    fputc(*s, f);
+                }
+                break;
+        }
+        s++;
+    }
+    fputc('"', f);
+}
+
+/* Helper macros for JSON output */
+#define JSON_START(f, event) fprintf(f, "{\"event\":\"%s\"", event)
+#define JSON_STR(f, key, val) do { fprintf(f, ",\"%s\":", key); json_escape_string(f, val); } while(0)
+#define JSON_INT(f, key, val) fprintf(f, ",\"%s\":%d", key, (int)(val))
+#define JSON_BOOL(f, key, val) fprintf(f, ",\"%s\":%s", key, (val) ? "true" : "false")
+#define JSON_END(f) fprintf(f, "}\n")
+#define JSON_DEPS_START(f) fprintf(f, ",\"dependencies\":[")
+#define JSON_DEPS_SEP(f, first) if (!(first)) fprintf(f, ",")
+#define JSON_DEP(f, type, name) do { fprintf(f, "{\"type\":\"%s\",\"name\":", type); json_escape_string(f, name); fprintf(f, "}"); } while(0)
+#define JSON_DEPS_END(f) fprintf(f, "]")
+
+/* ------------------------------------------------------------------------- */
 /* Forward declaration for type_to_str (defined later in this file) */
 static void type_to_str(char *buf, int buf_size, CType *type, const char *varstr);
 
@@ -219,6 +264,89 @@ static void track_symbol_usage(const char *name, const char *context)
         return;
     fprintf(tcc_state->usage_output, "SYMBOL: %s, CONTEXT: %s\n", name, context);
     fflush(tcc_state->usage_output);
+}
+
+/* Dependency collection structure for JSON output */
+typedef struct {
+    const char *type;  /* "TYPEDEF", "STRUCT", "UNION" */
+    const char *name;
+} TypeDependency;
+
+#define MAX_TYPE_DEPENDENCIES 16
+
+typedef struct {
+    TypeDependency deps[MAX_TYPE_DEPENDENCIES];
+    int count;
+} TypeDependencyList;
+
+/* Field information for TYPEDEF_STRUCT */
+typedef struct {
+    char name[64];
+    char type[256];
+} FieldInfo;
+
+#define MAX_STRUCT_FIELDS 64
+
+typedef struct {
+    FieldInfo fields[MAX_STRUCT_FIELDS];
+    int count;
+} FieldList;
+
+/* Collect type dependencies into a list (for JSON output) */
+static void collect_type_dependencies(CType *type, int needs_complete_type, TypeDependencyList *deps)
+{
+    if (!type || !deps || deps->count >= MAX_TYPE_DEPENDENCIES)
+        return;
+
+    /* Check for typedef reference FIRST */
+    if (type->typedef_token) {
+        const char *typedef_name = get_tok_str(type->typedef_token, NULL);
+        deps->deps[deps->count].type = "TYPEDEF";
+        deps->deps[deps->count].name = typedef_name;
+        deps->count++;
+        return;
+    }
+
+    int is_pointer = ((type->t & VT_BTYPE) == VT_PTR);
+    int is_array = (type->t & (VT_ARRAY|VT_VLA));
+
+    /* Arrays ALWAYS need complete element type */
+    if (is_array && type->ref) {
+        if (type->ref->type.typedef_token) {
+            const char *typedef_name = get_tok_str(type->ref->type.typedef_token, NULL);
+            deps->deps[deps->count].type = "TYPEDEF";
+            deps->deps[deps->count].name = typedef_name;
+            deps->count++;
+            return;
+        }
+        collect_type_dependencies(&type->ref->type, 1, deps);
+        return;
+    }
+
+    /* For pointers, check if target has typedef token (anonymous typedef struct) */
+    if (is_pointer) {
+        if (type->ref && type->ref->type.typedef_token) {
+            const char *typedef_name = get_tok_str(type->ref->type.typedef_token, NULL);
+            deps->deps[deps->count].type = "TYPEDEF";
+            deps->deps[deps->count].name = typedef_name;
+            deps->count++;
+        }
+        return;
+    }
+
+    /* Check for struct/union reference */
+    if ((type->t & VT_BTYPE) == VT_STRUCT) {
+        if (type->ref && type->ref->v) {
+            const char *tag_name = get_tok_str(type->ref->v & ~SYM_FIELD, NULL);
+            if (tag_name && tag_name[0] != '\0' &&
+                !(tag_name[0] == 'L' && tag_name[1] == '.')) {
+                deps->deps[deps->count].type = IS_UNION(type->t) ? "UNION" : "STRUCT";
+                deps->deps[deps->count].name = tag_name;
+                deps->count++;
+            }
+        }
+        return;
+    }
 }
 
 /* Emit explicit type dependencies for global topological sorting */
@@ -371,11 +499,15 @@ static void track_field_usage_with_type(const char *struct_name, const char *fie
     }
 
     const char *filename = file ? file->filename : "<unknown>";
-    fprintf(tcc_state->usage_output, "FIELD: %s%s%s, TYPE: %s, FILE: %s",
-            struct_name, is_arrow ? "->" : ".", field_name, type_buf, filename);
-    /* Emit type dependencies for global topological sorting */
-    emit_type_dependencies(field_type, 1);  /* Fields need complete types */
-    fprintf(tcc_state->usage_output, "\n");
+    const char *operator = is_arrow ? "->" : ".";
+
+    JSON_START(tcc_state->usage_output, "FIELD");
+    JSON_STR(tcc_state->usage_output, "struct", struct_name);
+    JSON_STR(tcc_state->usage_output, "operator", operator);
+    JSON_STR(tcc_state->usage_output, "field", field_name);
+    JSON_STR(tcc_state->usage_output, "type", type_buf);
+    JSON_STR(tcc_state->usage_output, "file", filename);
+    JSON_END(tcc_state->usage_output);
     fflush(tcc_state->usage_output);
 }
 
@@ -407,8 +539,14 @@ static void track_function_usage_with_type(const char *func_name, Sym *func_sym,
     }
 
     const char *filename = file ? file->filename : "<unknown>";
-    fprintf(tcc_state->usage_output, "FUNCTION: %s, RETURN: %s, PARAMS: (%s), ARGS: %d, FILE: %s\n",
-            func_name, ret_type_buf, param_buf, arg_count, filename);
+
+    JSON_START(tcc_state->usage_output, "FUNCTION");
+    JSON_STR(tcc_state->usage_output, "name", func_name);
+    JSON_STR(tcc_state->usage_output, "return", ret_type_buf);
+    JSON_STR(tcc_state->usage_output, "params", param_buf);
+    JSON_INT(tcc_state->usage_output, "args", arg_count);
+    JSON_STR(tcc_state->usage_output, "file", filename);
+    JSON_END(tcc_state->usage_output);
     fflush(tcc_state->usage_output);
 }
 
@@ -421,8 +559,10 @@ static void track_typedef_usage(CType *type)
     if (type->typedef_token) {
         const char *typedef_name = get_tok_str(type->typedef_token, NULL);
         const char *filename = file ? file->filename : "<unknown>";
-        fprintf(tcc_state->usage_output, "TYPEDEF_USAGE: %s, FILE: %s\n",
-                typedef_name, filename);
+        JSON_START(tcc_state->usage_output, "TYPEDEF_USAGE");
+        JSON_STR(tcc_state->usage_output, "name", typedef_name);
+        JSON_STR(tcc_state->usage_output, "file", filename);
+        JSON_END(tcc_state->usage_output);
         fflush(tcc_state->usage_output);
     }
 
@@ -4756,8 +4896,11 @@ static void struct_decl(CType *type, int u)
         const char *struct_name = get_tok_str(v, NULL);
         const char *struct_type = (u == VT_UNION) ? "union" : (u == VT_ENUM) ? "enum" : "struct";
         const char *filename = file ? file->filename : "<unknown>";
-        fprintf(tcc_state->usage_output, "STRUCT_DECL: %s %s, FILE: %s\n",
-                struct_type, struct_name, filename);
+        JSON_START(tcc_state->usage_output, "STRUCT_DECL");
+        JSON_STR(tcc_state->usage_output, "kind", struct_type);
+        JSON_STR(tcc_state->usage_output, "name", struct_name);
+        JSON_STR(tcc_state->usage_output, "file", filename);
+        JSON_END(tcc_state->usage_output);
         fflush(tcc_state->usage_output);
     }
 
@@ -4802,8 +4945,11 @@ do_decl:
                 if (tcc_state->track_usage && tcc_state->usage_output) {
                     const char *enum_name = get_tok_str(v, NULL);
                     const char *filename = file ? file->filename : "<unknown>";
-                    fprintf(tcc_state->usage_output, "ENUM_DECL: %s, VALUE: %lld, FILE: %s\n",
-                            enum_name, ll, filename);
+                    fprintf(tcc_state->usage_output, "{\"event\":\"ENUM_DECL\",\"name\":");
+                    json_escape_string(tcc_state->usage_output, enum_name);
+                    fprintf(tcc_state->usage_output, ",\"value\":\"%lld\",\"file\":", ll);
+                    json_escape_string(tcc_state->usage_output, filename);
+                    fprintf(tcc_state->usage_output, "}\n");
                     fflush(tcc_state->usage_output);
                 }
 
@@ -5029,27 +5175,38 @@ do_decl:
                             }
 
                             const char *filename = file ? file->filename : "<unknown>";
-                            fprintf(tcc_state->usage_output, "FIELD_DECL: %s.%s, TYPE: %s, FILE: %s",
-                                    struct_name, field_name, type_buf, filename);
 
-                            /* Option A: Emit preserved typedef dependency BEFORE emit_type_dependencies
-                             * This handles pointers to typedefs where typedef_token is lost in the pointer type.
-                             * For pointers, we DON'T emit dependency (forward decl suffices) EXCEPT when
-                             * the pointer is to an anonymous typedef struct (like state_t) which can't be
-                             * forward declared. We emit dependency for ALL typedef pointers and let the
-                             * topological sort handle it. */
-                            if (preserved_typedef && ((type1.t & VT_BTYPE) != VT_PTR)) {
-                                /* Non-pointer typedef: emit dependency (needs complete type) */
-                                fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", preserved_typedef);
-                            } else if (preserved_typedef && ((type1.t & VT_BTYPE) == VT_PTR)) {
-                                /* Pointer to typedef: emit dependency to ensure typedef is defined
-                                 * This is critical for anonymous struct typedefs that can't be forward-declared */
-                                fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", preserved_typedef);
+                            /* Collect dependencies */
+                            TypeDependencyList dep_list = {.count = 0};
+
+                            /* Add preserved typedef dependency if it exists */
+                            if (preserved_typedef && dep_list.count < MAX_TYPE_DEPENDENCIES) {
+                                dep_list.deps[dep_list.count].type = "TYPEDEF";
+                                dep_list.deps[dep_list.count].name = preserved_typedef;
+                                dep_list.count++;
                             }
 
-                            /* Emit type dependencies for global topological sorting */
-                            emit_type_dependencies(&type1, 1);  /* Fields need complete types */
-                            fprintf(tcc_state->usage_output, "\n");
+                            /* Collect type dependencies */
+                            collect_type_dependencies(&type1, 1, &dep_list);
+
+                            /* Output JSON */
+                            JSON_START(tcc_state->usage_output, "FIELD_DECL");
+                            JSON_STR(tcc_state->usage_output, "struct", struct_name);
+                            JSON_STR(tcc_state->usage_output, "field", field_name);
+                            JSON_STR(tcc_state->usage_output, "type", type_buf);
+                            JSON_STR(tcc_state->usage_output, "file", filename);
+
+                            /* Emit dependencies if any */
+                            if (dep_list.count > 0) {
+                                JSON_DEPS_START(tcc_state->usage_output);
+                                for (int i = 0; i < dep_list.count; i++) {
+                                    JSON_DEPS_SEP(tcc_state->usage_output, i == 0);
+                                    JSON_DEP(tcc_state->usage_output, dep_list.deps[i].type, dep_list.deps[i].name);
+                                }
+                                JSON_DEPS_END(tcc_state->usage_output);
+                            }
+
+                            JSON_END(tcc_state->usage_output);
                             fflush(tcc_state->usage_output);
                         }
 
@@ -5326,8 +5483,16 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                 char type_buf[256];
                 const char *filename = file ? file->filename : "<unknown>";
                 type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &s->type, NULL);
-                fprintf(tcc_state->usage_output, "TYPEDEF: %s, TYPE: %s, FILE: %s\n",
-                        typedef_name, type_buf, filename);
+                /* Note: This is a legacy TYPEDEF event, not TYPEDEF_DECL
+                 * It precedes TYPEDEF_STRUCT for anonymous struct typedefs
+                 * TODO: Evaluate if this should be removed or merged with TYPEDEF_STRUCT */
+                fprintf(tcc_state->usage_output, "{\"event\":\"TYPEDEF\",\"name\":");
+                json_escape_string(tcc_state->usage_output, typedef_name);
+                fprintf(tcc_state->usage_output, ",\"type\":");
+                json_escape_string(tcc_state->usage_output, type_buf);
+                fprintf(tcc_state->usage_output, ",\"file\":");
+                json_escape_string(tcc_state->usage_output, filename);
+                fprintf(tcc_state->usage_output, "}\n");
 
                 /* If it's a typedef of an anonymous struct/union, output the fields */
                 /* Only track anonymous types - named types are handled by regular TYPEDEF tracking */
@@ -5346,9 +5511,12 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                 }
 
                 if (s->type.ref && is_struct_or_union && is_anonymous) {
+                    /* Collect all fields for JSON output */
+                    FieldList field_list = {.count = 0};
+                    TypeDependencyList dep_list = {.count = 0};
+
                     Sym *field = s->type.ref->next;
-                    fprintf(tcc_state->usage_output, "TYPEDEF_STRUCT: %s {", typedef_name);
-                    while (field) {
+                    while (field && field_list.count < MAX_STRUCT_FIELDS) {
                         if (field->v) {
                             const char *field_name = get_tok_str(field->v & ~SYM_FIELD, NULL);
                             char field_type_buf[256];
@@ -5387,70 +5555,74 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                                 type_to_str(field_type_buf, sizeof(field_type_buf), &field->type, is_array ? field_name : NULL);
                             }
 
-                            /* For arrays, extract type and array suffix from field_type_buf */
-                            /* field_type_buf may contain either:
-                             * - "typedef_name [N]" (from typedef array handling above)
-                             * - "type field_name[N]" (from type_to_str for non-typedef arrays)
-                             */
+                            /* For arrays, normalize the field type */
                             if (is_array) {
                                 char *bracket_pos = strchr(field_type_buf, '[');
                                 if (bracket_pos) {
-                                    /* Check if field_type_buf already has correct format (typedef case) */
-                                    /* In typedef case: "fixed_t [4]" - field name NOT present in string */
-                                    /* In non-typedef case: "int bbox[4]" - field name IS present */
                                     char *field_name_in_buf = strstr(field_type_buf, field_name);
                                     _Bool is_typedef_format = (field_name_in_buf == NULL) || (field_name_in_buf >= bracket_pos);
 
-                                    if (is_typedef_format) {
-                                        /* Already formatted as "typedef_name [dimensions]", just output */
-                                        fprintf(tcc_state->usage_output, " %s: %s;", field_name, field_type_buf);
-                                    } else {
+                                    if (!is_typedef_format) {
                                         /* Need to extract: "type field_name[N]" -> "type [N]" */
-                                        /* Find where fieldname starts (after last space before '[') */
                                         char *name_start = bracket_pos - 1;
                                         while (name_start > field_type_buf && *name_start != ' ') {
                                             name_start--;
                                         }
                                         if (*name_start == ' ') name_start++;
 
-                                        /* Extract type part (everything before name) */
                                         int type_len = name_start - field_type_buf;
                                         char type_part[256];
                                         strncpy(type_part, field_type_buf, type_len);
                                         type_part[type_len] = '\0';
-                                        /* Trim trailing space from type */
                                         while (type_len > 0 && type_part[type_len-1] == ' ') {
                                             type_part[--type_len] = '\0';
                                         }
 
-                                        /* Array suffix is from '[' to end */
-                                        const char *array_suffix = bracket_pos;
-
-                                        /* Output as: field_name: type array_suffix */
-                                        fprintf(tcc_state->usage_output, " %s: %s %s;", field_name, type_part, array_suffix);
+                                        snprintf(field_type_buf, sizeof(field_type_buf), "%s %s", type_part, bracket_pos);
                                     }
-                                } else {
-                                    /* Shouldn't happen, but fallback */
-                                    fprintf(tcc_state->usage_output, " %s: %s;", field_name, field_type_buf);
                                 }
-                            } else {
-                                fprintf(tcc_state->usage_output, " %s: %s;", field_name, field_type_buf);
                             }
-                        }
-                        field = field->next;
-                    }
-                    fprintf(tcc_state->usage_output, " }, FILE: %s", filename);
 
-                    /* Emit type dependencies for global topological sorting */
-                    /* Second pass through fields to collect dependencies */
-                    field = s->type.ref->next;
-                    while (field) {
-                        if (field->v) {
-                            emit_type_dependencies(&field->type, 1);  /* Fields need complete types */
+                            /* Store field in list */
+                            strncpy(field_list.fields[field_list.count].name, field_name, sizeof(field_list.fields[0].name) - 1);
+                            strncpy(field_list.fields[field_list.count].type, field_type_buf, sizeof(field_list.fields[0].type) - 1);
+                            field_list.count++;
+
+                            /* Collect dependencies */
+                            collect_type_dependencies(&field->type, 1, &dep_list);
                         }
                         field = field->next;
                     }
-                    fprintf(tcc_state->usage_output, "\n");
+
+                    /* Output JSON */
+                    JSON_START(tcc_state->usage_output, "TYPEDEF_STRUCT");
+                    JSON_STR(tcc_state->usage_output, "name", typedef_name);
+
+                    /* Emit fields array */
+                    fprintf(tcc_state->usage_output, ",\"fields\":[");
+                    for (int i = 0; i < field_list.count; i++) {
+                        if (i > 0) fprintf(tcc_state->usage_output, ",");
+                        fprintf(tcc_state->usage_output, "{\"name\":");
+                        json_escape_string(tcc_state->usage_output, field_list.fields[i].name);
+                        fprintf(tcc_state->usage_output, ",\"type\":");
+                        json_escape_string(tcc_state->usage_output, field_list.fields[i].type);
+                        fprintf(tcc_state->usage_output, "}");
+                    }
+                    fprintf(tcc_state->usage_output, "]");
+
+                    JSON_STR(tcc_state->usage_output, "file", filename);
+
+                    /* Emit dependencies if any */
+                    if (dep_list.count > 0) {
+                        JSON_DEPS_START(tcc_state->usage_output);
+                        for (int i = 0; i < dep_list.count; i++) {
+                            JSON_DEPS_SEP(tcc_state->usage_output, i == 0);
+                            JSON_DEP(tcc_state->usage_output, dep_list.deps[i].type, dep_list.deps[i].name);
+                        }
+                        JSON_DEPS_END(tcc_state->usage_output);
+                    }
+
+                    JSON_END(tcc_state->usage_output);
                 }
 
                 fflush(tcc_state->usage_output);
@@ -6270,8 +6442,10 @@ ST_FUNC void unary(void)
             if ((vtop->type.t & VT_BTYPE) == VT_FUNC && vtop->sym) {
                 const char *func_name = get_tok_str(vtop->sym->v, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
-                fprintf(tcc_state->usage_output, "FUNCTION_USAGE: %s, FILE: %s\n",
-                        func_name, filename);
+                JSON_START(tcc_state->usage_output, "FUNCTION_USAGE");
+                JSON_STR(tcc_state->usage_output, "name", func_name);
+                JSON_STR(tcc_state->usage_output, "file", filename);
+                JSON_END(tcc_state->usage_output);
                 fflush(tcc_state->usage_output);
             }
         }
@@ -6638,7 +6812,11 @@ special_math_val:
                 /* Track undeclared variable for mincut (assume int type) */
                 if (tcc_state->track_usage && tcc_state->usage_output) {
                     const char *filename = file ? file->filename : "<unknown>";
-                    fprintf(tcc_state->usage_output, "EXTERN: %s, TYPE: int, FILE: %s\n", name, filename);
+                    JSON_START(tcc_state->usage_output, "EXTERN");
+                    JSON_STR(tcc_state->usage_output, "name", name);
+                    JSON_STR(tcc_state->usage_output, "type", "int");
+                    JSON_STR(tcc_state->usage_output, "file", filename);
+                    JSON_END(tcc_state->usage_output);
                     fflush(tcc_state->usage_output);
                 }
                 tcc_error("'%s' undeclared", name);
@@ -6672,8 +6850,13 @@ special_math_val:
                 char type_buf[256];
                 type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &s->type, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
-                fprintf(tcc_state->usage_output, "VAR_USE: %s, TYPE: %s, FILE: %s, R: 0x%x\n",
-                        var_name, type_buf, filename, r);
+                JSON_START(tcc_state->usage_output, "VAR_USE");
+                JSON_STR(tcc_state->usage_output, "name", var_name);
+                JSON_STR(tcc_state->usage_output, "type", type_buf);
+                JSON_STR(tcc_state->usage_output, "file", filename);
+                JSON_BOOL(tcc_state->usage_output, "read", 1);  // Always true for usage
+                JSON_BOOL(tcc_state->usage_output, "write", 0); // Simplified for now
+                JSON_END(tcc_state->usage_output);
                 fflush(tcc_state->usage_output);
             }
         }
@@ -6696,8 +6879,11 @@ special_math_val:
                     char type_buf[256];
                     type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &s->type, NULL);
                     const char *filename = file ? file->filename : "<unknown>";
-                    fprintf(tcc_state->usage_output, "EXTERN: %s, TYPE: %s, FILE: %s\n",
-                            var_name, type_buf, filename);
+                    JSON_START(tcc_state->usage_output, "EXTERN");
+                    JSON_STR(tcc_state->usage_output, "name", var_name);
+                    JSON_STR(tcc_state->usage_output, "type", type_buf);
+                    JSON_STR(tcc_state->usage_output, "file", filename);
+                    JSON_END(tcc_state->usage_output);
                     fflush(tcc_state->usage_output);
                 }
             }
@@ -6708,8 +6894,11 @@ special_math_val:
             if (tcc_state->track_usage && tcc_state->usage_output) {
                 const char *enum_name = get_tok_str(t, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
-                fprintf(tcc_state->usage_output, "ENUM: %s, VALUE: %lld, FILE: %s\n",
-                        enum_name, s->enum_val, filename);
+                fprintf(tcc_state->usage_output, "{\"event\":\"ENUM\",\"name\":");
+                json_escape_string(tcc_state->usage_output, enum_name);
+                fprintf(tcc_state->usage_output, ",\"value\":\"%lld\",\"file\":", s->enum_val);
+                json_escape_string(tcc_state->usage_output, filename);
+                fprintf(tcc_state->usage_output, "}\n");
                 fflush(tcc_state->usage_output);
             }
         }
@@ -6782,8 +6971,10 @@ special_math_val:
                 if ((vtop->type.t & VT_BTYPE) == VT_FUNC && vtop->sym) {
                     const char *func_name = get_tok_str(vtop->sym->v, NULL);
                     const char *filename = file ? file->filename : "<unknown>";
-                    fprintf(tcc_state->usage_output, "FUNCTION_USAGE: %s, FILE: %s\n",
-                            func_name, filename);
+                    JSON_START(tcc_state->usage_output, "FUNCTION_USAGE");
+                    JSON_STR(tcc_state->usage_output, "name", func_name);
+                    JSON_STR(tcc_state->usage_output, "file", filename);
+                    JSON_END(tcc_state->usage_output);
                     fflush(tcc_state->usage_output);
                 }
             }
@@ -9418,19 +9609,17 @@ static int decl(int l)
                         first = 0;
 
                         char param_type[256];
-                        /* Preserve typedef names in parameters */
-                        type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, NULL);
+                        /* Get parameter name if available */
+                        const char *param_name = NULL;
+                        if (param->v && (param->v & ~SYM_FIELD)) {
+                            param_name = get_tok_str(param->v, NULL);
+                        }
+                        /* Preserve typedef names in parameters (includes param name for function pointers) */
+                        type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, param_name);
                         strcat(params_buf, param_type);
 
                         /* Track typedef usage in parameter type */
                         track_typedef_usage(&param->type);
-
-                        /* Add parameter name if available */
-                        if (param->v && (param->v & ~SYM_FIELD)) {
-                            const char *param_name = get_tok_str(param->v, NULL);
-                            strcat(params_buf, " ");
-                            strcat(params_buf, param_name);
-                        }
 
                         param = param->next;
                     }
@@ -9444,8 +9633,12 @@ static int decl(int l)
                         }
                     }
 
-                    fprintf(tcc_state->usage_output, "FUNCTION_DECL: %s, RETURN: %s, PARAMS: (%s), FILE: %s\n",
-                            func_name, return_type_buf, params_buf, filename);
+                    JSON_START(tcc_state->usage_output, "FUNCTION_DECL");
+                    JSON_STR(tcc_state->usage_output, "name", func_name);
+                    JSON_STR(tcc_state->usage_output, "return", return_type_buf);
+                    JSON_STR(tcc_state->usage_output, "params", params_buf);
+                    JSON_STR(tcc_state->usage_output, "file", filename);
+                    JSON_END(tcc_state->usage_output);
                     fflush(tcc_state->usage_output);
                 }
 
@@ -9545,13 +9738,23 @@ static int decl(int l)
                             /* e.g., "typedef post_t column_t" instead of "typedef struct <anonymous> column_t" */
                             if (is_typedef_alias) {
                                 const char *original_typedef_name = get_tok_str(original_typedef_token, NULL);
-                                fprintf(tcc_state->usage_output, "TYPEDEF_DECL: %s, TYPE: typedef %s, FILE: %s\n",
-                                        typedef_name, original_typedef_name, filename);
+                                fprintf(tcc_state->usage_output, "{\"event\":\"TYPEDEF_DECL\",\"name\":");
+                                json_escape_string(tcc_state->usage_output, typedef_name);
+                                fprintf(tcc_state->usage_output, ",\"type\":");
+                                fprintf(tcc_state->usage_output, "\"typedef %s\"", original_typedef_name);
+                                fprintf(tcc_state->usage_output, ",\"file\":");
+                                json_escape_string(tcc_state->usage_output, filename);
+                                fprintf(tcc_state->usage_output, "}\n");
                             } else {
                                 char type_buf[256];
                                 type_to_str(type_buf, sizeof(type_buf), &type, NULL);
-                                fprintf(tcc_state->usage_output, "TYPEDEF_DECL: %s, TYPE: %s, FILE: %s\n",
-                                        typedef_name, type_buf, filename);
+                                fprintf(tcc_state->usage_output, "{\"event\":\"TYPEDEF_DECL\",\"name\":");
+                                json_escape_string(tcc_state->usage_output, typedef_name);
+                                fprintf(tcc_state->usage_output, ",\"type\":");
+                                json_escape_string(tcc_state->usage_output, type_buf);
+                                fprintf(tcc_state->usage_output, ",\"file\":");
+                                json_escape_string(tcc_state->usage_output, filename);
+                                fprintf(tcc_state->usage_output, "}\n");
                             }
                             /* NOTE: We don't emit dependencies for typedef declarations because:
                              * 1. type.typedef_token points to the typedef itself (self-reference)
@@ -9622,8 +9825,11 @@ static int decl(int l)
                                 type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &type, NULL);
                             }
 
-                            fprintf(tcc_state->usage_output, "EXTERN_DECL: %s, TYPE: %s, FILE: %s\n",
-                                    var_name, type_buf, filename);
+                            JSON_START(tcc_state->usage_output, "EXTERN_DECL");
+                            JSON_STR(tcc_state->usage_output, "name", var_name);
+                            JSON_STR(tcc_state->usage_output, "type", type_buf);
+                            JSON_STR(tcc_state->usage_output, "file", filename);
+                            JSON_END(tcc_state->usage_output);
                             fflush(tcc_state->usage_output);
 
                             /* Track typedef usage in extern variable type */
@@ -9653,19 +9859,17 @@ static int decl(int l)
                                 first = 0;
 
                                 char param_type[256];
-                                /* Preserve typedef names in parameters */
-                                type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, NULL);
+                                /* Get parameter name if available */
+                                const char *param_name = NULL;
+                                if (param->v && (param->v & ~SYM_FIELD)) {
+                                    param_name = get_tok_str(param->v, NULL);
+                                }
+                                /* Preserve typedef names in parameters (includes param name for function pointers) */
+                                type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, param_name);
                                 strcat(params_buf, param_type);
 
                                 /* Track typedef usage in parameter type */
                                 track_typedef_usage(&param->type);
-
-                                /* Add parameter name if available */
-                                if (param->v && (param->v & ~SYM_FIELD)) {
-                                    const char *param_name = get_tok_str(param->v, NULL);
-                                    strcat(params_buf, " ");
-                                    strcat(params_buf, param_name);
-                                }
 
                                 param = param->next;
                             }
@@ -9679,8 +9883,12 @@ static int decl(int l)
                                 }
                             }
 
-                            fprintf(tcc_state->usage_output, "FUNCTION_DECL: %s, RETURN: %s, PARAMS: (%s), FILE: %s\n",
-                                    func_name, return_type_buf, params_buf, filename);
+                            JSON_START(tcc_state->usage_output, "FUNCTION_DECL");
+                            JSON_STR(tcc_state->usage_output, "name", func_name);
+                            JSON_STR(tcc_state->usage_output, "return", return_type_buf);
+                            JSON_STR(tcc_state->usage_output, "params", params_buf);
+                            JSON_STR(tcc_state->usage_output, "file", filename);
+                            JSON_END(tcc_state->usage_output);
                             fflush(tcc_state->usage_output);
                         }
                     } else {
@@ -9721,8 +9929,12 @@ static int decl(int l)
                                 type_to_str(type_buf, sizeof(type_buf), &type, NULL);
                             }
 
-                            fprintf(tcc_state->usage_output, "VAR_DEF: %s, TYPE: %s, SCOPE: %s, FILE: %s\n",
-                                    var_name, type_buf, scope, filename);
+                            JSON_START(tcc_state->usage_output, "VAR_DEF");
+                            JSON_STR(tcc_state->usage_output, "name", var_name);
+                            JSON_STR(tcc_state->usage_output, "type", type_buf);
+                            JSON_STR(tcc_state->usage_output, "scope", scope);
+                            JSON_STR(tcc_state->usage_output, "file", filename);
+                            JSON_END(tcc_state->usage_output);
                             fflush(tcc_state->usage_output);
                         }
 
@@ -9754,19 +9966,17 @@ static int decl(int l)
                                 first = 0;
 
                                 char param_type[256];
-                                /* Preserve typedef names in parameters */
-                                type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, NULL);
+                                /* Get parameter name if available */
+                                const char *param_name = NULL;
+                                if (param->v && (param->v & ~SYM_FIELD)) {
+                                    param_name = get_tok_str(param->v, NULL);
+                                }
+                                /* Preserve typedef names in parameters (includes param name for function pointers) */
+                                type_to_str_preserve_typedef(param_type, sizeof(param_type), &param->type, param_name);
                                 strcat(params_buf, param_type);
 
                                 /* Track typedef usage in parameter type */
                                 track_typedef_usage(&param->type);
-
-                                /* Add parameter name if available */
-                                if (param->v && (param->v & ~SYM_FIELD)) {
-                                    const char *param_name = get_tok_str(param->v, NULL);
-                                    strcat(params_buf, " ");
-                                    strcat(params_buf, param_name);
-                                }
 
                                 param = param->next;
                             }
@@ -9780,8 +9990,12 @@ static int decl(int l)
                                 }
                             }
 
-                            fprintf(tcc_state->usage_output, "FUNCTION_DECL: %s, RETURN: %s, PARAMS: (%s), FILE: %s\n",
-                                    func_name, return_type_buf, params_buf, filename);
+                            JSON_START(tcc_state->usage_output, "FUNCTION_DECL");
+                            JSON_STR(tcc_state->usage_output, "name", func_name);
+                            JSON_STR(tcc_state->usage_output, "return", return_type_buf);
+                            JSON_STR(tcc_state->usage_output, "params", params_buf);
+                            JSON_STR(tcc_state->usage_output, "file", filename);
+                            JSON_END(tcc_state->usage_output);
                             fflush(tcc_state->usage_output);
                         }
                     }

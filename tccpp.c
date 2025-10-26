@@ -21,6 +21,47 @@
 #define USING_GLOBALS
 #include "tcc.h"
 
+/* ------------------------------------------------------------------------- */
+/* JSON tracking output helpers (same as in tccgen.c) */
+
+/* Escape a string for JSON output */
+static void json_escape_string(FILE *f, const char *s)
+{
+    if (!s) {
+        fputs("null", f);
+        return;
+    }
+
+    fputc('"', f);
+    while (*s) {
+        switch (*s) {
+            case '"':  fputs("\\\"", f); break;
+            case '\\': fputs("\\\\", f); break;
+            case '\n': fputs("\\n", f); break;
+            case '\r': fputs("\\r", f); break;
+            case '\t': fputs("\\t", f); break;
+            case '\b': fputs("\\b", f); break;
+            case '\f': fputs("\\f", f); break;
+            default:
+                if ((unsigned char)*s < 32) {
+                    fprintf(f, "\\u%04x", (unsigned char)*s);
+                } else {
+                    fputc(*s, f);
+                }
+                break;
+        }
+        s++;
+    }
+    fputc('"', f);
+}
+
+/* Helper macros for JSON output */
+#define JSON_START(f, event) fprintf(f, "{\"event\":\"%s\"", event)
+#define JSON_STR(f, key, val) do { fprintf(f, ",\"%s\":", key); json_escape_string(f, val); } while(0)
+#define JSON_END(f) fprintf(f, "}\n")
+
+/* ------------------------------------------------------------------------- */
+
 /* #define to 1 to enable (see parse_pp_string()) */
 #define ACCEPT_LF_IN_STRINGS 0
 
@@ -1700,27 +1741,24 @@ bad_twosharp:
     if (tcc_state->track_usage && tcc_state->usage_output && str.str) {
         const char *macro_name = get_tok_str(v, NULL);
         const char *filename = file ? file->filename : "<unknown>";
-        fprintf(tcc_state->usage_output, "MACRO_DECL: %s", macro_name);
 
-        /* Output parameter list for function-like macros */
+        /* Build parameter list for function-like macros */
+        char params_buf[1024] = "";
         if (t == MACRO_FUNC) {
-            fprintf(tcc_state->usage_output, "(");
             Sym *param = first;
             int first_param = 1;
             while (param) {
                 if (!first_param)
-                    fprintf(tcc_state->usage_output, ", ");
+                    strcat(params_buf, ",");
                 const char *param_name = get_tok_str(param->v & ~SYM_FIELD, NULL);
-                fprintf(tcc_state->usage_output, "%s", param_name);
+                strcat(params_buf, param_name);
                 first_param = 0;
                 param = param->next;
             }
-            fprintf(tcc_state->usage_output, ")");
         }
 
-        fprintf(tcc_state->usage_output, ", VALUE: ");
-
-        /* Output macro expansion tokens */
+        /* Build macro expansion value */
+        char value_buf[4096] = "";
         const int *p = str.str;
         CValue cv;
         int tok_val;
@@ -1729,16 +1767,29 @@ bad_twosharp:
             if (tok_val == 0)
                 break;
             if (tok_val == TOK_CINT || tok_val == TOK_CCHAR) {
-                fprintf(tcc_state->usage_output, "%d ", (int)cv.i);
+                char num_buf[32];
+                snprintf(num_buf, sizeof(num_buf), "%d ", (int)cv.i);
+                strcat(value_buf, num_buf);
             } else if (tok_val == TOK_STR) {
-                fprintf(tcc_state->usage_output, "\"%s\" ", (char *)cv.str.data);
+                strcat(value_buf, "\"");
+                strcat(value_buf, (char *)cv.str.data);
+                strcat(value_buf, "\" ");
             } else {
                 const char *tok_str = get_tok_str(tok_val, &cv);
-                if (tok_str && tok_str[0])
-                    fprintf(tcc_state->usage_output, "%s ", tok_str);
+                if (tok_str && tok_str[0]) {
+                    strcat(value_buf, tok_str);
+                    strcat(value_buf, " ");
+                }
             }
         }
-        fprintf(tcc_state->usage_output, ", FILE: %s\n", filename);
+
+        /* Output JSON */
+        JSON_START(tcc_state->usage_output, "MACRO_DECL");
+        JSON_STR(tcc_state->usage_output, "name", macro_name);
+        JSON_STR(tcc_state->usage_output, "params", params_buf[0] ? params_buf : "");
+        JSON_STR(tcc_state->usage_output, "value", value_buf);
+        JSON_STR(tcc_state->usage_output, "file", filename);
+        JSON_END(tcc_state->usage_output);
         fflush(tcc_state->usage_output);
     }
 
@@ -3481,9 +3532,11 @@ static int macro_subst_tok(
                             const char *arg_name = get_tok_str(t, &tokc);
                             const char *macro_name = get_tok_str(v, 0);
                             const char *filename = file ? file->filename : "<unknown>";
-                            fprintf(tcc_state->usage_output,
-                                    "MACRO_ARG: %s, MACRO: %s, FILE: %s\n",
-                                    arg_name, macro_name, filename);
+                            JSON_START(tcc_state->usage_output, "MACRO_ARG");
+                            JSON_STR(tcc_state->usage_output, "identifier", arg_name);
+                            JSON_STR(tcc_state->usage_output, "macro", macro_name);
+                            JSON_STR(tcc_state->usage_output, "file", filename);
+                            JSON_END(tcc_state->usage_output);
                             fflush(tcc_state->usage_output);
                         }
                         tok_str_add2_spc(&str, t, &tokc);
@@ -3612,9 +3665,9 @@ static int macro_subst(
             if (tcc_state->track_usage && tcc_state->usage_output && s->d) {
                 const char *macro_name = get_tok_str(t, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
-                fprintf(tcc_state->usage_output, "MACRO_USAGE: %s, VALUE: ", macro_name);
 
-                /* Output macro expansion tokens */
+                /* Build macro expansion value */
+                char value_buf[4096] = "";
                 const int *p = s->d;
                 CValue cv;
                 int tok;
@@ -3623,17 +3676,29 @@ static int macro_subst(
                     if (tok == 0)
                         break;
                     if (tok == TOK_CINT || tok == TOK_CCHAR) {
-                        fprintf(tcc_state->usage_output, "%d ", (int)cv.i);
+                        char tmp[32];
+                        snprintf(tmp, sizeof(tmp), "%d ", (int)cv.i);
+                        strcat(value_buf, tmp);
                     } else if (tok == TOK_STR) {
-                        fprintf(tcc_state->usage_output, "\"%s\" ", (char *)cv.str.data);
+                        strcat(value_buf, "\"");
+                        strcat(value_buf, (char *)cv.str.data);
+                        strcat(value_buf, "\" ");
                     } else {
                         /* Use get_tok_str for all other tokens (identifiers and operators) */
                         const char *tok_str = get_tok_str(tok, &cv);
-                        if (tok_str && tok_str[0])
-                            fprintf(tcc_state->usage_output, "%s ", tok_str);
+                        if (tok_str && tok_str[0]) {
+                            strcat(value_buf, tok_str);
+                            strcat(value_buf, " ");
+                        }
                     }
                 }
-                fprintf(tcc_state->usage_output, ", FILE: %s\n", filename);
+
+                /* Output JSON */
+                JSON_START(tcc_state->usage_output, "MACRO_USAGE");
+                JSON_STR(tcc_state->usage_output, "name", macro_name);
+                JSON_STR(tcc_state->usage_output, "value", value_buf);
+                JSON_STR(tcc_state->usage_output, "file", filename);
+                JSON_END(tcc_state->usage_output);
                 fflush(tcc_state->usage_output);
             }
 
@@ -3716,9 +3781,9 @@ redo:
             if (tcc_state->track_usage && tcc_state->usage_output && s->d) {
                 const char *macro_name = get_tok_str(t, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
-                fprintf(tcc_state->usage_output, "MACRO_USAGE: %s, VALUE: ", macro_name);
 
-                /* Output macro expansion tokens */
+                /* Build macro expansion value */
+                char value_buf[4096] = "";
                 const int *p = s->d;
                 CValue cv;
                 int tok_exp;
@@ -3727,16 +3792,28 @@ redo:
                     if (tok_exp == 0)
                         break;
                     if (tok_exp == TOK_CINT || tok_exp == TOK_CCHAR) {
-                        fprintf(tcc_state->usage_output, "%d ", (int)cv.i);
+                        char tmp[32];
+                        snprintf(tmp, sizeof(tmp), "%d ", (int)cv.i);
+                        strcat(value_buf, tmp);
                     } else if (tok_exp == TOK_STR) {
-                        fprintf(tcc_state->usage_output, "\"%s\" ", (char *)cv.str.data);
+                        strcat(value_buf, "\"");
+                        strcat(value_buf, (char *)cv.str.data);
+                        strcat(value_buf, "\" ");
                     } else {
                         const char *tok_str = get_tok_str(tok_exp, &cv);
-                        if (tok_str && tok_str[0])
-                            fprintf(tcc_state->usage_output, "%s ", tok_str);
+                        if (tok_str && tok_str[0]) {
+                            strcat(value_buf, tok_str);
+                            strcat(value_buf, " ");
+                        }
                     }
                 }
-                fprintf(tcc_state->usage_output, ", FILE: %s\n", filename);
+
+                /* Output JSON */
+                JSON_START(tcc_state->usage_output, "MACRO_USAGE");
+                JSON_STR(tcc_state->usage_output, "name", macro_name);
+                JSON_STR(tcc_state->usage_output, "value", value_buf);
+                JSON_STR(tcc_state->usage_output, "file", filename);
+                JSON_END(tcc_state->usage_output);
                 fflush(tcc_state->usage_output);
             }
 
