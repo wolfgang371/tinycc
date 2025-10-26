@@ -4968,6 +4968,34 @@ do_decl:
             }
             skip('}');
 
+            /* Track complete enum type with all constants for mincut */
+            if (tcc_state->track_usage && tcc_state->usage_output && !(s->v & SYM_FIRST_ANOM)) {
+                const char *enum_name = get_tok_str(s->v & ~SYM_STRUCT, NULL);
+                const char *filename = file ? file->filename : "<unknown>";
+                Sym *enum_const;
+                int first_const = 1;
+
+                JSON_START(tcc_state->usage_output, "ENUM_TYPE");
+                JSON_STR(tcc_state->usage_output, "name", enum_name);
+                JSON_STR(tcc_state->usage_output, "file", filename);
+                fprintf(tcc_state->usage_output, ",\"constants\":[");
+
+                /* Iterate through all enum constants */
+                for (enum_const = s->next; enum_const; enum_const = enum_const->next) {
+                    const char *const_name = get_tok_str(enum_const->v, NULL);
+                    if (!first_const)
+                        fprintf(tcc_state->usage_output, ",");
+                    fprintf(tcc_state->usage_output, "{\"name\":");
+                    json_escape_string(tcc_state->usage_output, const_name);
+                    fprintf(tcc_state->usage_output, ",\"value\":\"%lld\"}", enum_const->enum_val);
+                    first_const = 0;
+                }
+
+                fprintf(tcc_state->usage_output, "]");
+                JSON_END(tcc_state->usage_output);
+                fflush(tcc_state->usage_output);
+            }
+
             if (bt) {
                 t.t = bt;
                 s->c = 2;
