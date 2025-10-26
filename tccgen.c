@@ -5325,7 +5325,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                 const char *typedef_name = get_tok_str(tok, NULL);
                 char type_buf[256];
                 const char *filename = file ? file->filename : "<unknown>";
-                type_to_str(type_buf, sizeof(type_buf), &s->type, NULL);
+                type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &s->type, NULL);
                 fprintf(tcc_state->usage_output, "TYPEDEF: %s, TYPE: %s, FILE: %s\n",
                         typedef_name, type_buf, filename);
 
