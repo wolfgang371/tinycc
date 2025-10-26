@@ -3537,8 +3537,9 @@ static int macro_subst_tok(
                         str.need_spc |= 1;
                     else {
                         /* Track identifiers used as macro arguments for mincut */
+                        /* Only track user identifiers (>= TOK_UIDENT), not keywords (TOK_IDENT..TOK_UIDENT-1) */
                         if (tcc_state->track_usage && tcc_state->usage_output &&
-                            t >= TOK_IDENT && parlevel == 0) {
+                            t >= TOK_UIDENT && parlevel == 0) {
                             const char *arg_name = get_tok_str(t, &tokc);
                             const char *macro_name = get_tok_str(v, 0);
                             const char *filename = file ? file->filename : "<unknown>";
