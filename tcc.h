@@ -1020,6 +1020,37 @@ struct TCCState {
     FILE *usage_output;         /* output file for usage tracking */
 };
 
+/* JSON utility function for tracking (shared between tccgen.c and tccpp.c) */
+static inline void json_escape_string(FILE *f, const char *s)
+{
+    if (!s) {
+        fputs("null", f);
+        return;
+    }
+
+    fputc('"', f);
+    while (*s) {
+        switch (*s) {
+            case '"':  fputs("\\\"", f); break;
+            case '\\': fputs("\\\\", f); break;
+            case '\n': fputs("\\n", f); break;
+            case '\r': fputs("\\r", f); break;
+            case '\t': fputs("\\t", f); break;
+            case '\b': fputs("\\b", f); break;
+            case '\f': fputs("\\f", f); break;
+            default:
+                if ((unsigned char)*s < 32) {
+                    fprintf(f, "\\u%04x", (unsigned char)*s);
+                } else {
+                    fputc(*s, f);
+                }
+                break;
+        }
+        s++;
+    }
+    fputc('"', f);
+}
+
 struct filespec {
     char type;
     char name[1];

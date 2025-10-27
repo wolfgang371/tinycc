@@ -161,37 +161,7 @@ static void do_Static_assert(void);
 
 /* ------------------------------------------------------------------------- */
 /* JSON tracking output helpers */
-
-/* Escape a string for JSON output */
-static void json_escape_string(FILE *f, const char *s)
-{
-    if (!s) {
-        fputs("null", f);
-        return;
-    }
-
-    fputc('"', f);
-    while (*s) {
-        switch (*s) {
-            case '"':  fputs("\\\"", f); break;
-            case '\\': fputs("\\\\", f); break;
-            case '\n': fputs("\\n", f); break;
-            case '\r': fputs("\\r", f); break;
-            case '\t': fputs("\\t", f); break;
-            case '\b': fputs("\\b", f); break;
-            case '\f': fputs("\\f", f); break;
-            default:
-                if ((unsigned char)*s < 32) {
-                    fprintf(f, "\\u%04x", (unsigned char)*s);
-                } else {
-                    fputc(*s, f);
-                }
-                break;
-        }
-        s++;
-    }
-    fputc('"', f);
-}
+/* Note: json_escape_string() is now defined in tcc.h as static inline */
 
 /* Helper macros for JSON output */
 #define JSON_START(f, event) fprintf(f, "{\"event\":\"%s\"", event)
