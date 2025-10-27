@@ -1521,6 +1521,7 @@ enum {
     TCC_OPTION_bt,
     TCC_OPTION_b,
     TCC_OPTION_g,
+    TCC_OPTION_t,
     TCC_OPTION_c,
     TCC_OPTION_dumpmachine,
     TCC_OPTION_dumpversion,
@@ -1593,6 +1594,7 @@ static const TCCOption tcc_options[] = {
     { "b", TCC_OPTION_b, 0 },
 #endif
     { "g", TCC_OPTION_g, TCC_OPTION_HAS_ARG | TCC_OPTION_NOSEP },
+    { "t", TCC_OPTION_t, TCC_OPTION_HAS_ARG },
 #ifdef TCC_TARGET_MACHO
     { "compatibility_version", TCC_OPTION_compatibility_version, TCC_OPTION_HAS_ARG },
     { "current_version", TCC_OPTION_current_version, TCC_OPTION_HAS_ARG },
@@ -1931,6 +1933,10 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
                 s->dwarf = 5, s->do_debug |= 16;
 #endif
             }
+            break;
+        case TCC_OPTION_t:
+            if (tcc_enable_usage_tracking(s, optarg) < 0)
+                return -1;
             break;
         case TCC_OPTION_c:
             x = TCC_OUTPUT_OBJ;

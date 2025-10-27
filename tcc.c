@@ -72,6 +72,8 @@ static const char help[] =
 #ifdef CONFIG_TCC_BACKTRACE
     "  -bt[N]       link with backtrace (stack dump) support [show max N callers]\n"
 #endif
+    "Symbol tracking:\n"
+    "  -t file      track symbol usage to JSON file (for mincut isolation tool)\n"
     "Misc. options:\n"
     "  -std=version define __STDC_VERSION__ according to version (c11/gnu11)\n"
     "  -x[c|a|b|n]  specify type of the next infile (C,ASM,BIN,NONE)\n"
