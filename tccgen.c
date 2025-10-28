@@ -9655,6 +9655,7 @@ static int decl(int l)
                     JSON_STR(tcc_state->usage_output, "return", return_type_buf);
                     JSON_STR(tcc_state->usage_output, "params", params_buf);
                     JSON_STR(tcc_state->usage_output, "file", filename);
+                    JSON_BOOL(tcc_state->usage_output, "inline", (type.t & VT_INLINE) != 0);
                     JSON_END(tcc_state->usage_output);
                     fflush(tcc_state->usage_output);
                 }
@@ -9926,6 +9927,7 @@ static int decl(int l)
                             JSON_STR(tcc_state->usage_output, "return", return_type_buf);
                             JSON_STR(tcc_state->usage_output, "params", params_buf);
                             JSON_STR(tcc_state->usage_output, "file", filename);
+                            JSON_BOOL(tcc_state->usage_output, "inline", (type.t & VT_INLINE) != 0);
                             JSON_END(tcc_state->usage_output);
                             fflush(tcc_state->usage_output);
                         }
@@ -10052,6 +10054,7 @@ static int decl(int l)
                             JSON_STR(tcc_state->usage_output, "return", return_type_buf);
                             JSON_STR(tcc_state->usage_output, "params", params_buf);
                             JSON_STR(tcc_state->usage_output, "file", filename);
+                            JSON_BOOL(tcc_state->usage_output, "inline", (type.t & VT_INLINE) != 0);
                             JSON_END(tcc_state->usage_output);
                             fflush(tcc_state->usage_output);
                         }
