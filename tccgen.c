@@ -9681,6 +9681,17 @@ static int decl(int l)
                     dynarray_add(&tcc_state->inline_fns,
 				 &tcc_state->nb_inline_fns, fn);
                     skip_or_save_block(&fn->func_str);
+
+                    /* Track function definition (inline) for mincut */
+                    if (tcc_state->track_usage && tcc_state->usage_output) {
+                        const char *func_name = get_tok_str(v, NULL);
+                        const char *filename = file ? file->filename : "<unknown>";
+                        JSON_START(tcc_state->usage_output, "FUNCTION_DEF");
+                        JSON_STR(tcc_state->usage_output, "name", func_name);
+                        JSON_STR(tcc_state->usage_output, "file", filename);
+                        JSON_END(tcc_state->usage_output);
+                        fflush(tcc_state->usage_output);
+                    }
                 } else {
                     /* compute text section */
                     cur_text_section = ad.section;
@@ -9689,6 +9700,17 @@ static int decl(int l)
                     else if (cur_text_section->sh_num > bss_section->sh_num)
                         cur_text_section->sh_flags = text_section->sh_flags;
                     gen_function(sym);
+
+                    /* Track function definition for mincut */
+                    if (tcc_state->track_usage && tcc_state->usage_output) {
+                        const char *func_name = get_tok_str(v, NULL);
+                        const char *filename = file ? file->filename : "<unknown>";
+                        JSON_START(tcc_state->usage_output, "FUNCTION_DEF");
+                        JSON_STR(tcc_state->usage_output, "name", func_name);
+                        JSON_STR(tcc_state->usage_output, "file", filename);
+                        JSON_END(tcc_state->usage_output);
+                        fflush(tcc_state->usage_output);
+                    }
                 }
                 break;
             } else {
