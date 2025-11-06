@@ -29,6 +29,9 @@ conftest
 conftest-*
 !conftest.c
 c2str
+c2str.native
+*.bak
+embed_work/
 tags
 TAGS
 tcc.1
