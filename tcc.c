@@ -330,6 +330,11 @@ redo:
         if (opt) {
             if (opt < 0) err:
                 ret = 1;
+    /* Delete tracking file if compilation failed */
+    if (ret != 0 && s->track_usage) {
+        tcc_delete_tracking_file(s);
+    }
+
             tcc_delete(s);
             return ret;
         }

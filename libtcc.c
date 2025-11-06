@@ -18,6 +18,20 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+/* Forward declarations for embedded resources */
+#ifdef EMBEDDED_RESOURCES
+const char* tcc_get_embedded_header(const char *path);
+int tcc_open_embedded_runtime(const char *filename);
+int tcc_vfd_read(int fd, void *buf, unsigned int count);
+long tcc_vfd_lseek(int fd, long offset, int whence);
+int tcc_vfd_close(int fd);
+
+/* Redirect I/O operations to our virtual FD wrappers */
+#define read(fd, buf, count) tcc_vfd_read(fd, buf, count)
+#define lseek(fd, offset, whence) tcc_vfd_lseek(fd, offset, whence)
+#define close(fd) tcc_vfd_close(fd)
+#endif
+
 #ifndef ONE_SOURCE
 # define ONE_SOURCE 1
 #endif
@@ -774,6 +788,12 @@ static int _tcc_open(TCCState *s1, const char *filename)
         fd = 0, filename = "<stdin>";
     else
         fd = open(filename, O_RDONLY | O_BINARY);
+#ifdef EMBEDDED_RESOURCES
+    /* Try embedded runtime files if regular open failed */
+    if (fd < 0) {
+        fd = tcc_open_embedded_runtime(filename);
+    }
+#endif
     if ((s1->verbose == 2 && fd >= 0) || s1->verbose == 3)
         printf("%s %*s%s\n", fd < 0 ? "nf":"->",
                (int)(s1->include_stack_ptr - s1->include_stack), "", filename);
@@ -783,6 +803,18 @@ static int _tcc_open(TCCState *s1, const char *filename)
 ST_FUNC int tcc_open(TCCState *s1, const char *filename)
 {
     int fd = _tcc_open(s1, filename);
+#ifdef EMBEDDED_RESOURCES
+    /* Check embedded headers first */
+    const char *embedded_content = tcc_get_embedded_header(filename);
+    if (embedded_content) {
+        int content_len = strlen(embedded_content);
+        tcc_open_bf(s1, filename, content_len);
+        memcpy(file->buffer, embedded_content, content_len);
+        file->buf_end = file->buffer + content_len;
+        file->buf_end[0] = CH_EOB;
+        return 0;
+    }
+#endif
     if (fd < 0)
         return -1;
     tcc_open_bf(s1, filename, 0);
@@ -908,6 +940,16 @@ LIBTCCAPI TCCState *tcc_new(void)
 
 LIBTCCAPI void tcc_delete(TCCState *s1)
 {
+    /* Close tracking file if open */
+    if (s1->usage_output) {
+        fclose(s1->usage_output);
+        s1->usage_output = NULL;
+    }
+    if (s1->usage_output_filename) {
+        tcc_free(s1->usage_output_filename);
+        s1->usage_output_filename = NULL;
+    }
+
     /* free sections */
     tccelf_delete(s1);
 
@@ -1021,6 +1063,16 @@ LIBTCCAPI int tcc_add_library_path(TCCState *s, const char *pathname)
 
 LIBTCCAPI void tcc_set_lib_path(TCCState *s, const char *path)
 {
+#ifdef EMBEDDED_RESOURCES
+    /* Add paths to search for virtual runtime files */
+    static int initialized = 0;
+    if (!initialized) {
+        tcc_add_library_path(s, ".");
+        tcc_add_library_path(s, "lib");
+        tcc_add_library_path(s, path);
+        initialized = 1;
+    }
+#endif
     tcc_set_str(&s->tcc_lib_path, path);
 }
 
@@ -2190,6 +2242,10 @@ LIBTCCAPI int tcc_enable_usage_tracking(TCCState *s, const char *output_file)
         fprintf(stderr, "tcc: could not open usage tracking file '%s'\n", output_file);
         return -1;
     }
+    /* Save filename for deletion on error */
+    if (s->usage_output_filename)
+        tcc_free(s->usage_output_filename);
+    s->usage_output_filename = tcc_strdup(output_file);
     s->track_usage = 1;
     return 0;
 }
@@ -2201,6 +2257,27 @@ LIBTCCAPI void tcc_disable_usage_tracking(TCCState *s)
     if (s->usage_output) {
         fclose(s->usage_output);
         s->usage_output = NULL;
+    }
+    if (s->usage_output_filename) {
+        tcc_free(s->usage_output_filename);
+        s->usage_output_filename = NULL;
+    }
+    s->track_usage = 0;
+}
+
+/* Delete tracking file on compilation error */
+LIBTCCAPI void tcc_delete_tracking_file(TCCState *s)
+{
+    if (!s)
+        return;
+    if (s->usage_output) {
+        fclose(s->usage_output);
+        s->usage_output = NULL;
+    }
+    if (s->usage_output_filename) {
+        remove(s->usage_output_filename);
+        tcc_free(s->usage_output_filename);
+        s->usage_output_filename = NULL;
     }
     s->track_usage = 0;
 }

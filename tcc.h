@@ -1018,6 +1018,7 @@ struct TCCState {
     /* usage tracking for mincut stub generation */
     unsigned char track_usage;  /* if true, track symbol usage */
     FILE *usage_output;         /* output file for usage tracking */
+    char *usage_output_filename; /* track file name for cleanup */
 };
 
 /* JSON utility function for tracking (shared between tccgen.c and tccpp.c) */
