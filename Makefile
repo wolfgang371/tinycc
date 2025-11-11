@@ -253,7 +253,7 @@ endif
 
 # convert "include/tccdefs.h" to "tccdefs_.h"
 %_.h : include/%.h c2str.exe
-	$S./c2str.exe $< $@
+	$S./c2str.native $< $@
 
 c2str.exe : conftest.c
 	$S$(CC) -DC2STR $< -o $@
