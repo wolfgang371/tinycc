@@ -3931,6 +3931,23 @@ ST_FUNC void preprocess_start(TCCState *s1, int filetype)
 
     tccpp_new(s1);
 
+    /* Emit include search paths for usage tracking */
+    if (s1->usage_output && s1->track_usage) {
+        int i;
+        /* Emit -I paths (user include paths) */
+        for (i = 0; i < s1->nb_include_paths; i++) {
+            fprintf(s1->usage_output, "{\"event\":\"INCLUDE_SEARCH_PATH\",\"path\":");
+            json_escape_string(s1->usage_output, s1->include_paths[i]);
+            fprintf(s1->usage_output, ",\"index\":%d,\"type\":\"user\"}\n", i);
+        }
+        /* Emit system include paths */
+        for (i = 0; i < s1->nb_sysinclude_paths; i++) {
+            fprintf(s1->usage_output, "{\"event\":\"INCLUDE_SEARCH_PATH\",\"path\":");
+            json_escape_string(s1->usage_output, s1->sysinclude_paths[i]);
+            fprintf(s1->usage_output, ",\"index\":%d,\"type\":\"system\"}\n", i);
+        }
+    }
+
     s1->include_stack_ptr = s1->include_stack;
     s1->ifdef_stack_ptr = s1->ifdef_stack;
     file->ifdef_stack_ptr = s1->ifdef_stack_ptr;
