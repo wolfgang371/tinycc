@@ -1017,39 +1017,45 @@ struct TCCState {
 
     /* usage tracking for mincut stub generation */
     unsigned char track_usage;  /* if true, track symbol usage */
-    FILE *usage_output;         /* output file for usage tracking */
-    char *usage_output_filename; /* track file name for cleanup */
+    FILE *usage_output;         /* memory stream for usage tracking (Linux only) */
+    char *usage_buffer;         /* buffer for tracking data (in memory) */
+    size_t usage_buffer_size;   /* current size of tracking data */
+    size_t usage_buffer_capacity; /* allocated capacity of buffer (Windows only) */
+    char *usage_output_filename; /* track file name to write on success */
 };
 
+/* Forward declaration for tracking printf (needed by json_escape_string) */
+PUB_FUNC int tcc_track_printf(TCCState *s, const char *fmt, ...) PRINTF_LIKE(2,3);
+
 /* JSON utility function for tracking (shared between tccgen.c and tccpp.c) */
-static inline void json_escape_string(FILE *f, const char *s)
+static inline void json_escape_string(TCCState *s1, const char *str)
 {
-    if (!s) {
-        fputs("null", f);
+    if (!str) {
+        tcc_track_printf(s1, "null");
         return;
     }
 
-    fputc('"', f);
-    while (*s) {
-        switch (*s) {
-            case '"':  fputs("\\\"", f); break;
-            case '\\': fputs("\\\\", f); break;
-            case '\n': fputs("\\n", f); break;
-            case '\r': fputs("\\r", f); break;
-            case '\t': fputs("\\t", f); break;
-            case '\b': fputs("\\b", f); break;
-            case '\f': fputs("\\f", f); break;
+    tcc_track_printf(s1, "\"");
+    while (*str) {
+        switch (*str) {
+            case '"':  tcc_track_printf(s1, "\\\""); break;
+            case '\\': tcc_track_printf(s1, "\\\\"); break;
+            case '\n': tcc_track_printf(s1, "\\n"); break;
+            case '\r': tcc_track_printf(s1, "\\r"); break;
+            case '\t': tcc_track_printf(s1, "\\t"); break;
+            case '\b': tcc_track_printf(s1, "\\b"); break;
+            case '\f': tcc_track_printf(s1, "\\f"); break;
             default:
-                if ((unsigned char)*s < 32) {
-                    fprintf(f, "\\u%04x", (unsigned char)*s);
+                if ((unsigned char)*str < 32) {
+                    tcc_track_printf(s1, "\\u%04x", (unsigned char)*str);
                 } else {
-                    fputc(*s, f);
+                    tcc_track_printf(s1, "%c", *str);
                 }
                 break;
         }
-        s++;
+        str++;
     }
-    fputc('"', f);
+    tcc_track_printf(s1, "\"");
 }
 
 struct filespec {

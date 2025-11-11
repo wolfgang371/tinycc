@@ -107,6 +107,12 @@ LIBTCCAPI int tcc_enable_usage_tracking(TCCState *s, const char *output_file);
 /* disable usage tracking and close output file */
 LIBTCCAPI void tcc_disable_usage_tracking(TCCState *s);
 
+/* write tracking buffer to file on successful compilation */
+LIBTCCAPI int tcc_write_tracking_file(TCCState *s);
+
+/* delete tracking data on compilation error */
+LIBTCCAPI void tcc_delete_tracking_file(TCCState *s);
+
 /*****************************/
 /* experimental/advanced section (see libtcc_test_mt.c for an example) */
 

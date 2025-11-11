@@ -163,16 +163,16 @@ static void do_Static_assert(void);
 /* JSON tracking output helpers */
 /* Note: json_escape_string() is now defined in tcc.h as static inline */
 
-/* Helper macros for JSON output */
-#define JSON_START(f, event) fprintf(f, "{\"event\":\"%s\"", event)
-#define JSON_STR(f, key, val) do { fprintf(f, ",\"%s\":", key); json_escape_string(f, val); } while(0)
-#define JSON_INT(f, key, val) fprintf(f, ",\"%s\":%d", key, (int)(val))
-#define JSON_BOOL(f, key, val) fprintf(f, ",\"%s\":%s", key, (val) ? "true" : "false")
-#define JSON_END(f) fprintf(f, "}\n")
-#define JSON_DEPS_START(f) fprintf(f, ",\"dependencies\":[")
-#define JSON_DEPS_SEP(f, first) if (!(first)) fprintf(f, ",")
-#define JSON_DEP(f, type, name) do { fprintf(f, "{\"type\":\"%s\",\"name\":", type); json_escape_string(f, name); fprintf(f, "}"); } while(0)
-#define JSON_DEPS_END(f) fprintf(f, "]")
+/* Helper macros for JSON output (s = TCCState*) */
+#define JSON_START(s, event) tcc_track_printf(s, "{\"event\":\"%s\"", event)
+#define JSON_STR(s, key, val) do { tcc_track_printf(s, ",\"%s\":", key); json_escape_string(s, val); } while(0)
+#define JSON_INT(s, key, val) tcc_track_printf(s, ",\"%s\":%d", key, (int)(val))
+#define JSON_BOOL(s, key, val) tcc_track_printf(s, ",\"%s\":%s", key, (val) ? "true" : "false")
+#define JSON_END(s) tcc_track_printf(s, "}\n")
+#define JSON_DEPS_START(s) tcc_track_printf(s, ",\"dependencies\":[")
+#define JSON_DEPS_SEP(s, first) if (!(first)) tcc_track_printf(s, ",")
+#define JSON_DEP(s, type, name) do { tcc_track_printf(s, "{\"type\":\"%s\",\"name\":", type); json_escape_string(s, name); tcc_track_printf(s, "}"); } while(0)
+#define JSON_DEPS_END(s) tcc_track_printf(s, "]")
 
 /* ------------------------------------------------------------------------- */
 /* Forward declaration for type_to_str (defined later in this file) */
@@ -249,10 +249,10 @@ static void type_to_str_preserve_typedef(char *buf, int buf_size, CType *type, c
 
 static void track_symbol_usage(const char *name, const char *context)
 {
-    if (!tcc_state->track_usage || !tcc_state->usage_output)
+    if (!tcc_state->track_usage)
         return;
-    fprintf(tcc_state->usage_output, "SYMBOL: %s, CONTEXT: %s\n", name, context);
-    fflush(tcc_state->usage_output);
+    tcc_track_printf(tcc_state, "SYMBOL: %s, CONTEXT: %s\n", name, context);
+    
 }
 
 /* Dependency collection structure for JSON output */
@@ -341,7 +341,7 @@ static void collect_type_dependencies(CType *type, int needs_complete_type, Type
 /* Emit explicit type dependencies for global topological sorting */
 static void emit_type_dependencies(CType *type, int needs_complete_type)
 {
-    if (!tcc_state->track_usage || !tcc_state->usage_output || !type)
+    if (!tcc_state->track_usage || !type)
         return;
 
     /* Check for typedef reference FIRST, before checking pointer/array/struct
@@ -350,7 +350,7 @@ static void emit_type_dependencies(CType *type, int needs_complete_type)
     if (type->typedef_token) {
         const char *typedef_name = get_tok_str(type->typedef_token, NULL);
         /* Emit dependency on the typedef itself */
-        fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
+        tcc_track_printf(tcc_state, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
         /* Note: We don't need to recurse further because the typedef itself
          * will have its own dependencies tracked when it's declared */
         return;
@@ -367,7 +367,7 @@ static void emit_type_dependencies(CType *type, int needs_complete_type)
         /* Check if array element has a typedef */
         if (type->ref->type.typedef_token) {
             const char *typedef_name = get_tok_str(type->ref->type.typedef_token, NULL);
-            fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
+            tcc_track_printf(tcc_state, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
             return;
         }
         /* Otherwise, recursively check element type dependencies */
@@ -387,7 +387,7 @@ static void emit_type_dependencies(CType *type, int needs_complete_type)
         /* Check if pointer target has a typedef token (anonymous typedef struct) */
         if (type->ref && type->ref->type.typedef_token) {
             const char *typedef_name = get_tok_str(type->ref->type.typedef_token, NULL);
-            fprintf(tcc_state->usage_output, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
+            tcc_track_printf(tcc_state, ", DEPENDS_ON: TYPEDEF:%s", typedef_name);
         }
         /* Pointers don't create ordering dependencies for named structs */
         return;
@@ -403,9 +403,9 @@ static void emit_type_dependencies(CType *type, int needs_complete_type)
             if (tag_name && tag_name[0] != '\0' &&
                 !(tag_name[0] == 'L' && tag_name[1] == '.')) {
                 if (IS_UNION(type->t)) {
-                    fprintf(tcc_state->usage_output, ", DEPENDS_ON: UNION:%s", tag_name);
+                    tcc_track_printf(tcc_state, ", DEPENDS_ON: UNION:%s", tag_name);
                 } else {
-                    fprintf(tcc_state->usage_output, ", DEPENDS_ON: STRUCT:%s", tag_name);
+                    tcc_track_printf(tcc_state, ", DEPENDS_ON: STRUCT:%s", tag_name);
                 }
             }
         }
@@ -420,7 +420,7 @@ static void track_field_usage_with_type(const char *struct_name, const char *fie
                                          int is_arrow, CType *field_type)
 {
     char type_buf[256];
-    if (!tcc_state->track_usage || !tcc_state->usage_output)
+    if (!tcc_state->track_usage)
         return;
 
     /* Check if this is an array field */
@@ -490,14 +490,14 @@ static void track_field_usage_with_type(const char *struct_name, const char *fie
     const char *filename = file ? file->filename : "<unknown>";
     const char *operator = is_arrow ? "->" : ".";
 
-    JSON_START(tcc_state->usage_output, "FIELD");
-    JSON_STR(tcc_state->usage_output, "struct", struct_name);
-    JSON_STR(tcc_state->usage_output, "operator", operator);
-    JSON_STR(tcc_state->usage_output, "field", field_name);
-    JSON_STR(tcc_state->usage_output, "type", type_buf);
-    JSON_STR(tcc_state->usage_output, "file", filename);
-    JSON_END(tcc_state->usage_output);
-    fflush(tcc_state->usage_output);
+    JSON_START(tcc_state, "FIELD");
+    JSON_STR(tcc_state, "struct", struct_name);
+    JSON_STR(tcc_state, "operator", operator);
+    JSON_STR(tcc_state, "field", field_name);
+    JSON_STR(tcc_state, "type", type_buf);
+    JSON_STR(tcc_state, "file", filename);
+    JSON_END(tcc_state);
+    
 }
 
 static void track_function_usage_with_type(const char *func_name, Sym *func_sym, int arg_count)
@@ -507,7 +507,7 @@ static void track_function_usage_with_type(const char *func_name, Sym *func_sym,
     Sym *param;
     int first;
 
-    if (!tcc_state->track_usage || !tcc_state->usage_output)
+    if (!tcc_state->track_usage)
         return;
 
     /* Get return type */
@@ -529,30 +529,30 @@ static void track_function_usage_with_type(const char *func_name, Sym *func_sym,
 
     const char *filename = file ? file->filename : "<unknown>";
 
-    JSON_START(tcc_state->usage_output, "FUNCTION");
-    JSON_STR(tcc_state->usage_output, "name", func_name);
-    JSON_STR(tcc_state->usage_output, "return", ret_type_buf);
-    JSON_STR(tcc_state->usage_output, "params", param_buf);
-    JSON_INT(tcc_state->usage_output, "args", arg_count);
-    JSON_STR(tcc_state->usage_output, "file", filename);
-    JSON_END(tcc_state->usage_output);
-    fflush(tcc_state->usage_output);
+    JSON_START(tcc_state, "FUNCTION");
+    JSON_STR(tcc_state, "name", func_name);
+    JSON_STR(tcc_state, "return", ret_type_buf);
+    JSON_STR(tcc_state, "params", param_buf);
+    JSON_INT(tcc_state, "args", arg_count);
+    JSON_STR(tcc_state, "file", filename);
+    JSON_END(tcc_state);
+    
 }
 
 static void track_typedef_usage(CType *type)
 {
-    if (!tcc_state->track_usage || !tcc_state->usage_output)
+    if (!tcc_state->track_usage)
         return;
 
     /* Track typedef usage - recursively check type for typedef tokens */
     if (type->typedef_token) {
         const char *typedef_name = get_tok_str(type->typedef_token, NULL);
         const char *filename = file ? file->filename : "<unknown>";
-        JSON_START(tcc_state->usage_output, "TYPEDEF_USAGE");
-        JSON_STR(tcc_state->usage_output, "name", typedef_name);
-        JSON_STR(tcc_state->usage_output, "file", filename);
-        JSON_END(tcc_state->usage_output);
-        fflush(tcc_state->usage_output);
+        JSON_START(tcc_state, "TYPEDEF_USAGE");
+        JSON_STR(tcc_state, "name", typedef_name);
+        JSON_STR(tcc_state, "file", filename);
+        JSON_END(tcc_state);
+        
     }
 
     /* For pointer types, also check the pointed-to type */
@@ -4881,16 +4881,16 @@ static void struct_decl(CType *type, int u)
     s->r = 0; /* default alignment is zero as gcc */
 
     /* Track struct/union/enum declaration for mincut */
-    if (tcc_state->track_usage && tcc_state->usage_output && !(v & SYM_FIRST_ANOM)) {
+    if (tcc_state->track_usage && !(v & SYM_FIRST_ANOM)) {
         const char *struct_name = get_tok_str(v, NULL);
         const char *struct_type = (u == VT_UNION) ? "union" : (u == VT_ENUM) ? "enum" : "struct";
         const char *filename = file ? file->filename : "<unknown>";
-        JSON_START(tcc_state->usage_output, "STRUCT_DECL");
-        JSON_STR(tcc_state->usage_output, "kind", struct_type);
-        JSON_STR(tcc_state->usage_output, "name", struct_name);
-        JSON_STR(tcc_state->usage_output, "file", filename);
-        JSON_END(tcc_state->usage_output);
-        fflush(tcc_state->usage_output);
+        JSON_START(tcc_state, "STRUCT_DECL");
+        JSON_STR(tcc_state, "kind", struct_type);
+        JSON_STR(tcc_state, "name", struct_name);
+        JSON_STR(tcc_state, "file", filename);
+        JSON_END(tcc_state);
+        
     }
 
 do_decl:
@@ -4931,15 +4931,15 @@ do_decl:
                 ss->enum_val = ll;
 
                 /* Track enum constant declaration for mincut */
-                if (tcc_state->track_usage && tcc_state->usage_output) {
+                if (tcc_state->track_usage) {
                     const char *enum_name = get_tok_str(v, NULL);
                     const char *filename = file ? file->filename : "<unknown>";
-                    fprintf(tcc_state->usage_output, "{\"event\":\"ENUM_DECL\",\"name\":");
-                    json_escape_string(tcc_state->usage_output, enum_name);
-                    fprintf(tcc_state->usage_output, ",\"value\":\"%lld\",\"file\":", ll);
-                    json_escape_string(tcc_state->usage_output, filename);
-                    fprintf(tcc_state->usage_output, "}\n");
-                    fflush(tcc_state->usage_output);
+                    tcc_track_printf(tcc_state, "{\"event\":\"ENUM_DECL\",\"name\":");
+                    json_escape_string(tcc_state, enum_name);
+                    tcc_track_printf(tcc_state, ",\"value\":\"%lld\",\"file\":", ll);
+                    json_escape_string(tcc_state, filename);
+                    tcc_track_printf(tcc_state, "}\n");
+                    
                 }
 
                 *ps = ss, ps = &ss->next;
@@ -4958,31 +4958,31 @@ do_decl:
             skip('}');
 
             /* Track complete enum type with all constants for mincut */
-            if (tcc_state->track_usage && tcc_state->usage_output && !(s->v & SYM_FIRST_ANOM)) {
+            if (tcc_state->track_usage && !(s->v & SYM_FIRST_ANOM)) {
                 const char *enum_name = get_tok_str(s->v & ~SYM_STRUCT, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
                 Sym *enum_const;
                 int first_const = 1;
 
-                JSON_START(tcc_state->usage_output, "ENUM_TYPE");
-                JSON_STR(tcc_state->usage_output, "name", enum_name);
-                JSON_STR(tcc_state->usage_output, "file", filename);
-                fprintf(tcc_state->usage_output, ",\"constants\":[");
+                JSON_START(tcc_state, "ENUM_TYPE");
+                JSON_STR(tcc_state, "name", enum_name);
+                JSON_STR(tcc_state, "file", filename);
+                tcc_track_printf(tcc_state, ",\"constants\":[");
 
                 /* Iterate through all enum constants */
                 for (enum_const = s->next; enum_const; enum_const = enum_const->next) {
                     const char *const_name = get_tok_str(enum_const->v, NULL);
                     if (!first_const)
-                        fprintf(tcc_state->usage_output, ",");
-                    fprintf(tcc_state->usage_output, "{\"name\":");
-                    json_escape_string(tcc_state->usage_output, const_name);
-                    fprintf(tcc_state->usage_output, ",\"value\":\"%lld\"}", enum_const->enum_val);
+                        tcc_track_printf(tcc_state, ",");
+                    tcc_track_printf(tcc_state, "{\"name\":");
+                    json_escape_string(tcc_state, const_name);
+                    tcc_track_printf(tcc_state, ",\"value\":\"%lld\"}", enum_const->enum_val);
                     first_const = 0;
                 }
 
-                fprintf(tcc_state->usage_output, "]");
-                JSON_END(tcc_state->usage_output);
-                fflush(tcc_state->usage_output);
+                tcc_track_printf(tcc_state, "]");
+                JSON_END(tcc_state);
+                
             }
 
             if (bt) {
@@ -5118,7 +5118,7 @@ do_decl:
                         ss->a = ad1.a;
 
                         /* Track field declaration for mincut */
-                        if (tcc_state->track_usage && tcc_state->usage_output) {
+                        if (tcc_state->track_usage) {
                             const char *struct_name = get_tok_str(s->v & ~SYM_STRUCT, NULL);
                             const char *field_name = get_tok_str(v, NULL);
                             char type_buf[256];
@@ -5207,24 +5207,24 @@ do_decl:
                             collect_type_dependencies(&type1, 1, &dep_list);
 
                             /* Output JSON */
-                            JSON_START(tcc_state->usage_output, "FIELD_DECL");
-                            JSON_STR(tcc_state->usage_output, "struct", struct_name);
-                            JSON_STR(tcc_state->usage_output, "field", field_name);
-                            JSON_STR(tcc_state->usage_output, "type", type_buf);
-                            JSON_STR(tcc_state->usage_output, "file", filename);
+                            JSON_START(tcc_state, "FIELD_DECL");
+                            JSON_STR(tcc_state, "struct", struct_name);
+                            JSON_STR(tcc_state, "field", field_name);
+                            JSON_STR(tcc_state, "type", type_buf);
+                            JSON_STR(tcc_state, "file", filename);
 
                             /* Emit dependencies if any */
                             if (dep_list.count > 0) {
-                                JSON_DEPS_START(tcc_state->usage_output);
+                                JSON_DEPS_START(tcc_state);
                                 for (int i = 0; i < dep_list.count; i++) {
-                                    JSON_DEPS_SEP(tcc_state->usage_output, i == 0);
-                                    JSON_DEP(tcc_state->usage_output, dep_list.deps[i].type, dep_list.deps[i].name);
+                                    JSON_DEPS_SEP(tcc_state, i == 0);
+                                    JSON_DEP(tcc_state, dep_list.deps[i].type, dep_list.deps[i].name);
                                 }
-                                JSON_DEPS_END(tcc_state->usage_output);
+                                JSON_DEPS_END(tcc_state);
                             }
 
-                            JSON_END(tcc_state->usage_output);
-                            fflush(tcc_state->usage_output);
+                            JSON_END(tcc_state);
+                            
                         }
 
                         *ps = ss;
@@ -5495,7 +5495,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                 goto the_end;
 
             /* Track typedef usage for mincut */
-            if (tcc_state->track_usage && tcc_state->usage_output) {
+            if (tcc_state->track_usage) {
                 const char *typedef_name = get_tok_str(tok, NULL);
                 char type_buf[256];
                 const char *filename = file ? file->filename : "<unknown>";
@@ -5503,13 +5503,13 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                 /* Note: This is a legacy TYPEDEF event, not TYPEDEF_DECL
                  * It precedes TYPEDEF_STRUCT for anonymous struct typedefs
                  * TODO: Evaluate if this should be removed or merged with TYPEDEF_STRUCT */
-                fprintf(tcc_state->usage_output, "{\"event\":\"TYPEDEF\",\"name\":");
-                json_escape_string(tcc_state->usage_output, typedef_name);
-                fprintf(tcc_state->usage_output, ",\"type\":");
-                json_escape_string(tcc_state->usage_output, type_buf);
-                fprintf(tcc_state->usage_output, ",\"file\":");
-                json_escape_string(tcc_state->usage_output, filename);
-                fprintf(tcc_state->usage_output, "}\n");
+                tcc_track_printf(tcc_state, "{\"event\":\"TYPEDEF\",\"name\":");
+                json_escape_string(tcc_state, typedef_name);
+                tcc_track_printf(tcc_state, ",\"type\":");
+                json_escape_string(tcc_state, type_buf);
+                tcc_track_printf(tcc_state, ",\"file\":");
+                json_escape_string(tcc_state, filename);
+                tcc_track_printf(tcc_state, "}\n");
 
                 /* If it's a typedef of an anonymous struct/union, output the fields */
                 /* Only track anonymous types - named types are handled by regular TYPEDEF tracking */
@@ -5522,7 +5522,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
 
                 /* Debug: Check event_t specifically */
                 if (strcmp(typedef_name, "event_t") == 0) {
-                    fprintf(tcc_state->usage_output, "DEBUG_event_t: v=%d, ANOM=%d, is_anon=%d, tag='%s', truly_anon=%d\n",
+                    tcc_track_printf(tcc_state, "DEBUG_event_t: v=%d, ANOM=%d, is_anon=%d, tag='%s', truly_anon=%d\n",
                             s->type.ref ? s->type.ref->v : -1, SYM_FIRST_ANOM, is_anonymous,
                             tag_name ? tag_name : "NULL", is_truly_anonymous);
                 }
@@ -5612,37 +5612,37 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                     }
 
                     /* Output JSON */
-                    JSON_START(tcc_state->usage_output, "TYPEDEF_STRUCT");
-                    JSON_STR(tcc_state->usage_output, "name", typedef_name);
+                    JSON_START(tcc_state, "TYPEDEF_STRUCT");
+                    JSON_STR(tcc_state, "name", typedef_name);
 
                     /* Emit fields array */
-                    fprintf(tcc_state->usage_output, ",\"fields\":[");
+                    tcc_track_printf(tcc_state, ",\"fields\":[");
                     for (int i = 0; i < field_list.count; i++) {
-                        if (i > 0) fprintf(tcc_state->usage_output, ",");
-                        fprintf(tcc_state->usage_output, "{\"name\":");
-                        json_escape_string(tcc_state->usage_output, field_list.fields[i].name);
-                        fprintf(tcc_state->usage_output, ",\"type\":");
-                        json_escape_string(tcc_state->usage_output, field_list.fields[i].type);
-                        fprintf(tcc_state->usage_output, "}");
+                        if (i > 0) tcc_track_printf(tcc_state, ",");
+                        tcc_track_printf(tcc_state, "{\"name\":");
+                        json_escape_string(tcc_state, field_list.fields[i].name);
+                        tcc_track_printf(tcc_state, ",\"type\":");
+                        json_escape_string(tcc_state, field_list.fields[i].type);
+                        tcc_track_printf(tcc_state, "}");
                     }
-                    fprintf(tcc_state->usage_output, "]");
+                    tcc_track_printf(tcc_state, "]");
 
-                    JSON_STR(tcc_state->usage_output, "file", filename);
+                    JSON_STR(tcc_state, "file", filename);
 
                     /* Emit dependencies if any */
                     if (dep_list.count > 0) {
-                        JSON_DEPS_START(tcc_state->usage_output);
+                        JSON_DEPS_START(tcc_state);
                         for (int i = 0; i < dep_list.count; i++) {
-                            JSON_DEPS_SEP(tcc_state->usage_output, i == 0);
-                            JSON_DEP(tcc_state->usage_output, dep_list.deps[i].type, dep_list.deps[i].name);
+                            JSON_DEPS_SEP(tcc_state, i == 0);
+                            JSON_DEP(tcc_state, dep_list.deps[i].type, dep_list.deps[i].name);
                         }
-                        JSON_DEPS_END(tcc_state->usage_output);
+                        JSON_DEPS_END(tcc_state);
                     }
 
-                    JSON_END(tcc_state->usage_output);
+                    JSON_END(tcc_state);
                 }
 
-                fflush(tcc_state->usage_output);
+                
             }
 
             n = tok, next();
@@ -6455,15 +6455,15 @@ ST_FUNC void unary(void)
           vtop->sym->a.addrtaken = 1;
 
         /* Track function address being taken for mincut */
-        if (tcc_state->track_usage && tcc_state->usage_output) {
+        if (tcc_state->track_usage) {
             if ((vtop->type.t & VT_BTYPE) == VT_FUNC && vtop->sym) {
                 const char *func_name = get_tok_str(vtop->sym->v, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
-                JSON_START(tcc_state->usage_output, "FUNCTION_USAGE");
-                JSON_STR(tcc_state->usage_output, "name", func_name);
-                JSON_STR(tcc_state->usage_output, "file", filename);
-                JSON_END(tcc_state->usage_output);
-                fflush(tcc_state->usage_output);
+                JSON_START(tcc_state, "FUNCTION_USAGE");
+                JSON_STR(tcc_state, "name", func_name);
+                JSON_STR(tcc_state, "file", filename);
+                JSON_END(tcc_state);
+                
             }
         }
 
@@ -6827,14 +6827,14 @@ special_math_val:
             const char *name = get_tok_str(t, NULL);
             if (tok != '(') {
                 /* Track undeclared variable for mincut (assume int type) */
-                if (tcc_state->track_usage && tcc_state->usage_output) {
+                if (tcc_state->track_usage) {
                     const char *filename = file ? file->filename : "<unknown>";
-                    JSON_START(tcc_state->usage_output, "EXTERN");
-                    JSON_STR(tcc_state->usage_output, "name", name);
-                    JSON_STR(tcc_state->usage_output, "type", "int");
-                    JSON_STR(tcc_state->usage_output, "file", filename);
-                    JSON_END(tcc_state->usage_output);
-                    fflush(tcc_state->usage_output);
+                    JSON_START(tcc_state, "EXTERN");
+                    JSON_STR(tcc_state, "name", name);
+                    JSON_STR(tcc_state, "type", "int");
+                    JSON_STR(tcc_state, "file", filename);
+                    JSON_END(tcc_state);
+                    
                 }
                 tcc_error("'%s' undeclared", name);
             }
@@ -6858,7 +6858,7 @@ special_math_val:
 	vtop->sym = s;
 
         /* Track ALL variable usage for mincut (before VT_SYM check) */
-        if (tcc_state->track_usage && tcc_state->usage_output) {
+        if (tcc_state->track_usage) {
             /* Only track variables, not functions (functions handled elsewhere) */
             /* IMPORTANT: Must check (type.t & VT_BTYPE) == VT_FUNC, not type.t & VT_FUNC! */
             /* VT_FUNC is a basic type value (6), not a flag bit */
@@ -6867,14 +6867,14 @@ special_math_val:
                 char type_buf[256];
                 type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &s->type, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
-                JSON_START(tcc_state->usage_output, "VAR_USE");
-                JSON_STR(tcc_state->usage_output, "name", var_name);
-                JSON_STR(tcc_state->usage_output, "type", type_buf);
-                JSON_STR(tcc_state->usage_output, "file", filename);
-                JSON_BOOL(tcc_state->usage_output, "read", 1);  // Always true for usage
-                JSON_BOOL(tcc_state->usage_output, "write", 0); // Simplified for now
-                JSON_END(tcc_state->usage_output);
-                fflush(tcc_state->usage_output);
+                JSON_START(tcc_state, "VAR_USE");
+                JSON_STR(tcc_state, "name", var_name);
+                JSON_STR(tcc_state, "type", type_buf);
+                JSON_STR(tcc_state, "file", filename);
+                JSON_BOOL(tcc_state, "read", 1);  // Always true for usage
+                JSON_BOOL(tcc_state, "write", 0); // Simplified for now
+                JSON_END(tcc_state);
+                
             }
         }
 
@@ -6888,7 +6888,7 @@ special_math_val:
             }
 #endif
             /* Track extern variable usage for mincut */
-            if (tcc_state->track_usage && tcc_state->usage_output) {
+            if (tcc_state->track_usage) {
                 /* Only track variables, not functions (functions handled elsewhere) */
                 /* IMPORTANT: Must check (type.t & VT_BTYPE) == VT_FUNC, not type.t & VT_FUNC! */
                 if (!((s->type.t & VT_BTYPE) == VT_FUNC)) {
@@ -6896,27 +6896,27 @@ special_math_val:
                     char type_buf[256];
                     type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &s->type, NULL);
                     const char *filename = file ? file->filename : "<unknown>";
-                    JSON_START(tcc_state->usage_output, "EXTERN");
-                    JSON_STR(tcc_state->usage_output, "name", var_name);
-                    JSON_STR(tcc_state->usage_output, "type", type_buf);
-                    JSON_STR(tcc_state->usage_output, "file", filename);
-                    JSON_END(tcc_state->usage_output);
-                    fflush(tcc_state->usage_output);
+                    JSON_START(tcc_state, "EXTERN");
+                    JSON_STR(tcc_state, "name", var_name);
+                    JSON_STR(tcc_state, "type", type_buf);
+                    JSON_STR(tcc_state, "file", filename);
+                    JSON_END(tcc_state);
+                    
                 }
             }
         } else if (r == VT_CONST && IS_ENUM_VAL(s->type.t)) {
             vtop->c.i = s->enum_val;
 
             /* Track enum constant usage for mincut */
-            if (tcc_state->track_usage && tcc_state->usage_output) {
+            if (tcc_state->track_usage) {
                 const char *enum_name = get_tok_str(t, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
-                fprintf(tcc_state->usage_output, "{\"event\":\"ENUM\",\"name\":");
-                json_escape_string(tcc_state->usage_output, enum_name);
-                fprintf(tcc_state->usage_output, ",\"value\":\"%lld\",\"file\":", s->enum_val);
-                json_escape_string(tcc_state->usage_output, filename);
-                fprintf(tcc_state->usage_output, "}\n");
-                fflush(tcc_state->usage_output);
+                tcc_track_printf(tcc_state, "{\"event\":\"ENUM\",\"name\":");
+                json_escape_string(tcc_state, enum_name);
+                tcc_track_printf(tcc_state, ",\"value\":\"%lld\",\"file\":", s->enum_val);
+                json_escape_string(tcc_state, filename);
+                tcc_track_printf(tcc_state, "}\n");
+                
             }
         }
         break;
@@ -6984,15 +6984,15 @@ special_math_val:
 
             /* function call  */
             /* Track function call usage for mincut */
-            if (tcc_state->track_usage && tcc_state->usage_output) {
+            if (tcc_state->track_usage) {
                 if ((vtop->type.t & VT_BTYPE) == VT_FUNC && vtop->sym) {
                     const char *func_name = get_tok_str(vtop->sym->v, NULL);
                     const char *filename = file ? file->filename : "<unknown>";
-                    JSON_START(tcc_state->usage_output, "FUNCTION_USAGE");
-                    JSON_STR(tcc_state->usage_output, "name", func_name);
-                    JSON_STR(tcc_state->usage_output, "file", filename);
-                    JSON_END(tcc_state->usage_output);
-                    fflush(tcc_state->usage_output);
+                    JSON_START(tcc_state, "FUNCTION_USAGE");
+                    JSON_STR(tcc_state, "name", func_name);
+                    JSON_STR(tcc_state, "file", filename);
+                    JSON_END(tcc_state);
+                    
                 }
             }
 
@@ -9146,7 +9146,7 @@ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r,
             sym->a = ad->a;
 
             /* Track typedef usage in local variable declaration for mincut */
-            if (tcc_state->track_usage && tcc_state->usage_output) {
+            if (tcc_state->track_usage) {
                 track_typedef_usage(type);
             }
         } else {
@@ -9605,7 +9605,7 @@ static int decl(int l)
                 sym = external_sym(v, &type, 0, &ad);
 
                 /* Track function definition for mincut */
-                if (tcc_state->track_usage && tcc_state->usage_output) {
+                if (tcc_state->track_usage) {
                     const char *func_name = get_tok_str(v, NULL);
                     char return_type_buf[256];
                     char params_buf[1024];
@@ -9650,14 +9650,14 @@ static int decl(int l)
                         }
                     }
 
-                    JSON_START(tcc_state->usage_output, "FUNCTION_DECL");
-                    JSON_STR(tcc_state->usage_output, "name", func_name);
-                    JSON_STR(tcc_state->usage_output, "return", return_type_buf);
-                    JSON_STR(tcc_state->usage_output, "params", params_buf);
-                    JSON_STR(tcc_state->usage_output, "file", filename);
-                    JSON_BOOL(tcc_state->usage_output, "inline", (type.t & VT_INLINE) != 0);
-                    JSON_END(tcc_state->usage_output);
-                    fflush(tcc_state->usage_output);
+                    JSON_START(tcc_state, "FUNCTION_DECL");
+                    JSON_STR(tcc_state, "name", func_name);
+                    JSON_STR(tcc_state, "return", return_type_buf);
+                    JSON_STR(tcc_state, "params", params_buf);
+                    JSON_STR(tcc_state, "file", filename);
+                    JSON_BOOL(tcc_state, "inline", (type.t & VT_INLINE) != 0);
+                    JSON_END(tcc_state);
+                    
                 }
 
                 /* reject abstract declarators in function definition
@@ -9684,14 +9684,14 @@ static int decl(int l)
                     skip_or_save_block(&fn->func_str);
 
                     /* Track function definition (inline) for mincut */
-                    if (tcc_state->track_usage && tcc_state->usage_output) {
+                    if (tcc_state->track_usage) {
                         const char *func_name = get_tok_str(v, NULL);
                         const char *filename = file ? file->filename : "<unknown>";
-                        JSON_START(tcc_state->usage_output, "FUNCTION_DEF");
-                        JSON_STR(tcc_state->usage_output, "name", func_name);
-                        JSON_STR(tcc_state->usage_output, "file", filename);
-                        JSON_END(tcc_state->usage_output);
-                        fflush(tcc_state->usage_output);
+                        JSON_START(tcc_state, "FUNCTION_DEF");
+                        JSON_STR(tcc_state, "name", func_name);
+                        JSON_STR(tcc_state, "file", filename);
+                        JSON_END(tcc_state);
+                        
                     }
                 } else {
                     /* compute text section */
@@ -9703,14 +9703,14 @@ static int decl(int l)
                     gen_function(sym);
 
                     /* Track function definition for mincut */
-                    if (tcc_state->track_usage && tcc_state->usage_output) {
+                    if (tcc_state->track_usage) {
                         const char *func_name = get_tok_str(v, NULL);
                         const char *filename = file ? file->filename : "<unknown>";
-                        JSON_START(tcc_state->usage_output, "FUNCTION_DEF");
-                        JSON_STR(tcc_state->usage_output, "name", func_name);
-                        JSON_STR(tcc_state->usage_output, "file", filename);
-                        JSON_END(tcc_state->usage_output);
-                        fflush(tcc_state->usage_output);
+                        JSON_START(tcc_state, "FUNCTION_DEF");
+                        JSON_STR(tcc_state, "name", func_name);
+                        JSON_STR(tcc_state, "file", filename);
+                        JSON_END(tcc_state);
+                        
                     }
                 }
                 break;
@@ -9757,7 +9757,7 @@ static int decl(int l)
                     /* Emit TYPEDEF_DECL for ALL typedefs to track declaration file */
                     /* Anonymous struct/union typedefs also emit TYPEDEF_STRUCT during usage */
                     /* Anonymous means: tag name is NULL, empty, or compiler-generated (starts with "L.") */
-                    if (tcc_state->track_usage && tcc_state->usage_output) {
+                    if (tcc_state->track_usage) {
                         int is_struct_or_union = ((type.t & VT_BTYPE) == VT_STRUCT || (type.t & VT_BTYPE) == VT_UNION);
                         int is_enum = ((type.t & VT_BTYPE) == VT_ENUM);
                         const char *tag_name = (type.ref && type.ref->v) ? get_tok_str(type.ref->v, NULL) : NULL;
@@ -9777,29 +9777,29 @@ static int decl(int l)
                             /* e.g., "typedef post_t column_t" instead of "typedef struct <anonymous> column_t" */
                             if (is_typedef_alias) {
                                 const char *original_typedef_name = get_tok_str(original_typedef_token, NULL);
-                                fprintf(tcc_state->usage_output, "{\"event\":\"TYPEDEF_DECL\",\"name\":");
-                                json_escape_string(tcc_state->usage_output, typedef_name);
-                                fprintf(tcc_state->usage_output, ",\"type\":");
-                                fprintf(tcc_state->usage_output, "\"typedef %s\"", original_typedef_name);
-                                fprintf(tcc_state->usage_output, ",\"file\":");
-                                json_escape_string(tcc_state->usage_output, filename);
-                                fprintf(tcc_state->usage_output, "}\n");
+                                tcc_track_printf(tcc_state, "{\"event\":\"TYPEDEF_DECL\",\"name\":");
+                                json_escape_string(tcc_state, typedef_name);
+                                tcc_track_printf(tcc_state, ",\"type\":");
+                                tcc_track_printf(tcc_state, "\"typedef %s\"", original_typedef_name);
+                                tcc_track_printf(tcc_state, ",\"file\":");
+                                json_escape_string(tcc_state, filename);
+                                tcc_track_printf(tcc_state, "}\n");
                             } else {
                                 char type_buf[256];
                                 type_to_str(type_buf, sizeof(type_buf), &type, NULL);
-                                fprintf(tcc_state->usage_output, "{\"event\":\"TYPEDEF_DECL\",\"name\":");
-                                json_escape_string(tcc_state->usage_output, typedef_name);
-                                fprintf(tcc_state->usage_output, ",\"type\":");
-                                json_escape_string(tcc_state->usage_output, type_buf);
-                                fprintf(tcc_state->usage_output, ",\"file\":");
-                                json_escape_string(tcc_state->usage_output, filename);
-                                fprintf(tcc_state->usage_output, "}\n");
+                                tcc_track_printf(tcc_state, "{\"event\":\"TYPEDEF_DECL\",\"name\":");
+                                json_escape_string(tcc_state, typedef_name);
+                                tcc_track_printf(tcc_state, ",\"type\":");
+                                json_escape_string(tcc_state, type_buf);
+                                tcc_track_printf(tcc_state, ",\"file\":");
+                                json_escape_string(tcc_state, filename);
+                                tcc_track_printf(tcc_state, "}\n");
                             }
                             /* NOTE: We don't emit dependencies for typedef declarations because:
                              * 1. type.typedef_token points to the typedef itself (self-reference)
                              * 2. Typedef dependencies are tracked through FIELD_DECL usage instead
                              * 3. This avoids self-dependency cycles in topological sort */
-                            fflush(tcc_state->usage_output);
+                            
                         }
                     }
                     if ((type.t & VT_BTYPE) == VT_FUNC)
@@ -9835,7 +9835,7 @@ static int decl(int l)
                         external_sym(v, &type, r, &ad);
 
                         /* Track extern variable declaration for mincut */
-                        if (tcc_state->track_usage && tcc_state->usage_output &&
+                        if (tcc_state->track_usage &&
                             (type.t & VT_BTYPE) != VT_FUNC) {
                             const char *var_name = get_tok_str(v, NULL);
                             char type_buf[256];
@@ -9845,19 +9845,19 @@ static int decl(int l)
                             /* This handles arrays (including multidimensional), pointers, and typedefs correctly */
                             type_to_str_preserve_typedef(type_buf, sizeof(type_buf), &type, NULL);
 
-                            JSON_START(tcc_state->usage_output, "EXTERN_DECL");
-                            JSON_STR(tcc_state->usage_output, "name", var_name);
-                            JSON_STR(tcc_state->usage_output, "type", type_buf);
-                            JSON_STR(tcc_state->usage_output, "file", filename);
-                            JSON_END(tcc_state->usage_output);
-                            fflush(tcc_state->usage_output);
+                            JSON_START(tcc_state, "EXTERN_DECL");
+                            JSON_STR(tcc_state, "name", var_name);
+                            JSON_STR(tcc_state, "type", type_buf);
+                            JSON_STR(tcc_state, "file", filename);
+                            JSON_END(tcc_state);
+                            
 
                             /* Track typedef usage in extern variable type */
                             track_typedef_usage(&type);
                         }
 
                         /* Track function declaration for mincut */
-                        if (tcc_state->track_usage && tcc_state->usage_output &&
+                        if (tcc_state->track_usage &&
                             (type.t & VT_BTYPE) == VT_FUNC) {
                             const char *func_name = get_tok_str(v, NULL);
                             char return_type_buf[256];
@@ -9922,14 +9922,14 @@ static int decl(int l)
                                 }
                             }
 
-                            JSON_START(tcc_state->usage_output, "FUNCTION_DECL");
-                            JSON_STR(tcc_state->usage_output, "name", func_name);
-                            JSON_STR(tcc_state->usage_output, "return", return_type_buf);
-                            JSON_STR(tcc_state->usage_output, "params", params_buf);
-                            JSON_STR(tcc_state->usage_output, "file", filename);
-                            JSON_BOOL(tcc_state->usage_output, "inline", (type.t & VT_INLINE) != 0);
-                            JSON_END(tcc_state->usage_output);
-                            fflush(tcc_state->usage_output);
+                            JSON_START(tcc_state, "FUNCTION_DECL");
+                            JSON_STR(tcc_state, "name", func_name);
+                            JSON_STR(tcc_state, "return", return_type_buf);
+                            JSON_STR(tcc_state, "params", params_buf);
+                            JSON_STR(tcc_state, "file", filename);
+                            JSON_BOOL(tcc_state, "inline", (type.t & VT_INLINE) != 0);
+                            JSON_END(tcc_state);
+                            
                         }
                     } else {
                         if (l == VT_CONST || (type.t & VT_STATIC))
@@ -9945,7 +9945,7 @@ static int decl(int l)
                         decl_initializer_alloc(&type, &ad, r, has_init, v, l);
 
                         /* Track variable definitions (static, global, local) for mincut */
-                        if (tcc_state->track_usage && tcc_state->usage_output &&
+                        if (tcc_state->track_usage &&
                             (type.t & VT_BTYPE) != VT_FUNC) {
                             const char *var_name = get_tok_str(v, NULL);
                             char type_buf[256];
@@ -9969,22 +9969,22 @@ static int decl(int l)
                                 type_to_str(type_buf, sizeof(type_buf), &type, NULL);
                             }
 
-                            JSON_START(tcc_state->usage_output, "VAR_DEF");
-                            JSON_STR(tcc_state->usage_output, "name", var_name);
-                            JSON_STR(tcc_state->usage_output, "type", type_buf);
-                            JSON_STR(tcc_state->usage_output, "scope", scope);
-                            JSON_STR(tcc_state->usage_output, "file", filename);
-                            JSON_END(tcc_state->usage_output);
-                            fflush(tcc_state->usage_output);
+                            JSON_START(tcc_state, "VAR_DEF");
+                            JSON_STR(tcc_state, "name", var_name);
+                            JSON_STR(tcc_state, "type", type_buf);
+                            JSON_STR(tcc_state, "scope", scope);
+                            JSON_STR(tcc_state, "file", filename);
+                            JSON_END(tcc_state);
+                            
                         }
 
                         /* Track typedef usage in global variable declaration for mincut */
-                        if (tcc_state->track_usage && tcc_state->usage_output && l == VT_CONST) {
+                        if (tcc_state->track_usage && l == VT_CONST) {
                             track_typedef_usage(&type);
                         }
 
                         /* Track static/inline function declarations for mincut */
-                        if (tcc_state->track_usage && tcc_state->usage_output &&
+                        if (tcc_state->track_usage &&
                             (type.t & VT_BTYPE) == VT_FUNC) {
                             const char *func_name = get_tok_str(v, NULL);
                             char return_type_buf[256];
@@ -10049,14 +10049,14 @@ static int decl(int l)
                                 }
                             }
 
-                            JSON_START(tcc_state->usage_output, "FUNCTION_DECL");
-                            JSON_STR(tcc_state->usage_output, "name", func_name);
-                            JSON_STR(tcc_state->usage_output, "return", return_type_buf);
-                            JSON_STR(tcc_state->usage_output, "params", params_buf);
-                            JSON_STR(tcc_state->usage_output, "file", filename);
-                            JSON_BOOL(tcc_state->usage_output, "inline", (type.t & VT_INLINE) != 0);
-                            JSON_END(tcc_state->usage_output);
-                            fflush(tcc_state->usage_output);
+                            JSON_START(tcc_state, "FUNCTION_DECL");
+                            JSON_STR(tcc_state, "name", func_name);
+                            JSON_STR(tcc_state, "return", return_type_buf);
+                            JSON_STR(tcc_state, "params", params_buf);
+                            JSON_STR(tcc_state, "file", filename);
+                            JSON_BOOL(tcc_state, "inline", (type.t & VT_INLINE) != 0);
+                            JSON_END(tcc_state);
+                            
                         }
                     }
 

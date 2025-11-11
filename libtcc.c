@@ -2230,19 +2230,126 @@ LIBTCCAPI int tcc_set_options(TCCState *s, const char *r)
     return ret;
 }
 
+/* Cross-platform tracking printf wrapper */
+#ifdef _WIN32
+/* Windows: Manual memory buffer management (no open_memstream) */
+/* Undefine macros to use system malloc/realloc/free */
+#undef malloc
+#undef realloc
+#undef free
+PUB_FUNC int tcc_track_printf(TCCState *s, const char *fmt, ...) {
+    va_list ap;
+    char *str;
+    int len;
+    size_t new_size;
+    char *new_buf;
+
+    if (!s || !s->track_usage) return 0;
+
+    va_start(ap, fmt);
+    len = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+
+    if (len < 0) return -1;
+
+    str = (char *)malloc(len + 1);
+    if (!str) return -1;
+
+    va_start(ap, fmt);
+    vsnprintf(str, len + 1, fmt, ap);
+    va_end(ap);
+
+    /* Grow buffer if needed */
+    new_size = s->usage_buffer_size + len;
+    if (new_size > s->usage_buffer_capacity) {
+        size_t new_capacity = s->usage_buffer_capacity * 2;
+        if (new_capacity < new_size) new_capacity = new_size + 4096;
+        new_buf = (char *)realloc(s->usage_buffer, new_capacity);
+        if (!new_buf) {
+            free(str);
+            return -1;
+        }
+        s->usage_buffer = new_buf;
+        s->usage_buffer_capacity = new_capacity;
+    }
+
+    /* Append to buffer */
+    memcpy(s->usage_buffer + s->usage_buffer_size, str, len);
+    s->usage_buffer_size += len;
+    free(str);
+    return len;
+}
+/* Redefine macros */
+#define malloc(s) use_tcc_malloc(s)
+#define realloc(p,s) use_tcc_realloc(p,s)
+#define free(p) use_tcc_free(p)
+#else
+/* Linux: Use open_memstream with FILE* */
+PUB_FUNC int tcc_track_printf(TCCState *s, const char *fmt, ...) {
+    va_list ap;
+    int ret;
+
+    if (!s || !s->track_usage || !s->usage_output) return 0;
+
+    va_start(ap, fmt);
+    ret = vfprintf(s->usage_output, fmt, ap);
+    va_end(ap);
+    return ret;
+}
+#endif
+
 /* Usage tracking for mincut stub generation */
 LIBTCCAPI int tcc_enable_usage_tracking(TCCState *s, const char *output_file)
 {
     if (!s)
         return -1;
-    if (s->usage_output)
-        fclose(s->usage_output);
-    s->usage_output = fopen(output_file, "w");
-    if (!s->usage_output) {
-        fprintf(stderr, "tcc: could not open usage tracking file '%s'\n", output_file);
+
+    /* Step (a): Delete any existing tracking file at start */
+    remove(output_file);
+
+    /* Step (b): Initialize memory-only tracking data collection */
+#ifdef _WIN32
+    /* Windows: Manual memory buffer (no open_memstream available) */
+    /* Use system malloc/free for tracking buffer to avoid macro conflicts */
+    #undef malloc
+    #undef realloc
+    #undef free
+    if (s->usage_buffer) {
+        free(s->usage_buffer);
+    }
+    s->usage_buffer = (char *)malloc(4096);
+    #define malloc(s) use_tcc_malloc(s)
+    #define realloc(p,s) use_tcc_realloc(p,s)
+    #define free(p) use_tcc_free(p)
+    if (!s->usage_buffer) {
+        fprintf(stderr, "tcc: could not allocate tracking buffer\n");
         return -1;
     }
-    /* Save filename for deletion on error */
+    s->usage_buffer[0] = '\0';
+    s->usage_buffer_size = 0;
+    s->usage_buffer_capacity = 4096;
+    s->usage_output = NULL;  /* Not used on Windows */
+#else
+    /* Linux: Use open_memstream for memory-only FILE* */
+    if (s->usage_output) {
+        fclose(s->usage_output);
+        s->usage_output = NULL;
+    }
+    if (s->usage_buffer) {
+        /* Use system free for open_memstream buffer */
+        #undef free
+        free(s->usage_buffer);
+        #define free(p) use_tcc_free(p)
+        s->usage_buffer = NULL;
+    }
+    s->usage_output = open_memstream(&s->usage_buffer, &s->usage_buffer_size);
+    if (!s->usage_output) {
+        fprintf(stderr, "tcc: could not create memory stream for tracking\n");
+        return -1;
+    }
+#endif
+
+    /* Save filename for writing on success */
     if (s->usage_output_filename)
         tcc_free(s->usage_output_filename);
     s->usage_output_filename = tcc_strdup(output_file);
@@ -2254,10 +2361,34 @@ LIBTCCAPI void tcc_disable_usage_tracking(TCCState *s)
 {
     if (!s)
         return;
+
+#ifdef _WIN32
+    /* Windows: Free manual buffer */
+    /* Use system free for tracking buffer */
+    #undef free
+    if (s->usage_buffer) {
+        free(s->usage_buffer);
+        s->usage_buffer = NULL;
+    }
+    #define free(p) use_tcc_free(p)
+    s->usage_buffer_size = 0;
+    s->usage_buffer_capacity = 0;
+#else
+    /* Linux: Close memstream (also frees buffer) */
     if (s->usage_output) {
         fclose(s->usage_output);
         s->usage_output = NULL;
     }
+    if (s->usage_buffer) {
+        /* Use system free for open_memstream buffer */
+        #undef free
+        free(s->usage_buffer);
+        #define free(p) use_tcc_free(p)
+        s->usage_buffer = NULL;
+    }
+    s->usage_buffer_size = 0;
+#endif
+
     if (s->usage_output_filename) {
         tcc_free(s->usage_output_filename);
         s->usage_output_filename = NULL;
@@ -2265,17 +2396,84 @@ LIBTCCAPI void tcc_disable_usage_tracking(TCCState *s)
     s->track_usage = 0;
 }
 
-/* Delete tracking file on compilation error */
+/* Step (c): Write tracking data to file on successful compilation */
+LIBTCCAPI int tcc_write_tracking_file(TCCState *s)
+{
+    FILE *f;
+
+    if (!s || !s->track_usage || !s->usage_output_filename)
+        return 0;
+
+#ifdef _WIN32
+    /* Windows: Write buffer directly */
+    if (!s->usage_buffer || s->usage_buffer_size == 0)
+        return 0;
+
+    f = fopen(s->usage_output_filename, "w");
+    if (!f) {
+        fprintf(stderr, "tcc: could not write tracking file '%s'\n", s->usage_output_filename);
+        return -1;
+    }
+
+    fwrite(s->usage_buffer, 1, s->usage_buffer_size, f);
+    fclose(f);
+#else
+    /* Linux: Flush memstream, then write buffer */
+    if (!s->usage_output)
+        return 0;
+
+    fflush(s->usage_output);  /* Ensure buffer is up to date */
+
+    if (!s->usage_buffer || s->usage_buffer_size == 0)
+        return 0;
+
+    f = fopen(s->usage_output_filename, "w");
+    if (!f) {
+        fprintf(stderr, "tcc: could not write tracking file '%s'\n", s->usage_output_filename);
+        return -1;
+    }
+
+    fwrite(s->usage_buffer, 1, s->usage_buffer_size, f);
+    fclose(f);
+#endif
+
+    return 0;
+}
+
+/* On compilation error: just discard buffer, don't write to disk */
 LIBTCCAPI void tcc_delete_tracking_file(TCCState *s)
 {
     if (!s)
         return;
+
+#ifdef _WIN32
+    /* Windows: Free manual buffer */
+    /* Use system free for tracking buffer */
+    #undef free
+    if (s->usage_buffer) {
+        free(s->usage_buffer);
+        s->usage_buffer = NULL;
+    }
+    #define free(p) use_tcc_free(p)
+    s->usage_buffer_size = 0;
+    s->usage_buffer_capacity = 0;
+#else
+    /* Linux: Close memstream (discards buffer) */
     if (s->usage_output) {
         fclose(s->usage_output);
         s->usage_output = NULL;
     }
+    if (s->usage_buffer) {
+        /* Use system free for open_memstream buffer */
+        #undef free
+        free(s->usage_buffer);
+        #define free(p) use_tcc_free(p)
+        s->usage_buffer = NULL;
+    }
+    s->usage_buffer_size = 0;
+#endif
+
     if (s->usage_output_filename) {
-        remove(s->usage_output_filename);
         tcc_free(s->usage_output_filename);
         s->usage_output_filename = NULL;
     }

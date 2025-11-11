@@ -25,10 +25,10 @@
 /* JSON tracking output helpers */
 /* Note: json_escape_string() is now defined in tcc.h as static inline */
 
-/* Helper macros for JSON output */
-#define JSON_START(f, event) fprintf(f, "{\"event\":\"%s\"", event)
-#define JSON_STR(f, key, val) do { fprintf(f, ",\"%s\":", key); json_escape_string(f, val); } while(0)
-#define JSON_END(f) fprintf(f, "}\n")
+/* Helper macros for JSON output (s = TCCState*) */
+#define JSON_START(s, event) tcc_track_printf(s, "{\"event\":\"%s\"", event)
+#define JSON_STR(s, key, val) do { tcc_track_printf(s, ",\"%s\":", key); json_escape_string(s, val); } while(0)
+#define JSON_END(s) tcc_track_printf(s, "}\n")
 
 /* ------------------------------------------------------------------------- */
 
@@ -1524,9 +1524,9 @@ static int parse_include(TCCState *s1, int do_next, int test)
         printf("%s: including %s\n", file->prev->filename, file->filename);
 #endif
         /* track include for isolation */
-        if (tcc_state && tcc_state->usage_output) {
+        if (tcc_state) {
             const char *include_type = (c == '<') ? "system" : "local";
-            fprintf(tcc_state->usage_output,
+            tcc_track_printf(tcc_state,
                 "{\"event\":\"INCLUDE\",\"file\":\"%s\",\"included\":\"%s\",\"included_path\":\"%s\",\"type\":\"%s\"}\n",
                 file->prev->filename,  /* file that contains the #include */
                 name,                  /* include name as written (e.g., "SDL2/SDL.h") */
@@ -1718,7 +1718,7 @@ bad_twosharp:
         tcc_error("'##' cannot appear at either end of macro");
 
     /* Track macro declaration for mincut */
-    if (tcc_state->track_usage && tcc_state->usage_output && str.str) {
+    if (tcc_state->track_usage && str.str) {
         const char *macro_name = get_tok_str(v, NULL);
         const char *filename = file ? file->filename : "<unknown>";
 
@@ -1764,13 +1764,13 @@ bad_twosharp:
         }
 
         /* Output JSON */
-        JSON_START(tcc_state->usage_output, "MACRO_DECL");
-        JSON_STR(tcc_state->usage_output, "name", macro_name);
-        JSON_STR(tcc_state->usage_output, "params", params_buf[0] ? params_buf : "");
-        JSON_STR(tcc_state->usage_output, "value", value_buf);
-        JSON_STR(tcc_state->usage_output, "file", filename);
-        JSON_END(tcc_state->usage_output);
-        fflush(tcc_state->usage_output);
+        JSON_START(tcc_state, "MACRO_DECL");
+        JSON_STR(tcc_state, "name", macro_name);
+        JSON_STR(tcc_state, "params", params_buf[0] ? params_buf : "");
+        JSON_STR(tcc_state, "value", value_buf);
+        JSON_STR(tcc_state, "file", filename);
+        JSON_END(tcc_state);
+        
     }
 
     define_push(v, t, str.str, first);
@@ -3508,17 +3508,17 @@ static int macro_subst_tok(
                     else {
                         /* Track identifiers used as macro arguments for mincut */
                         /* Only track user identifiers (>= TOK_UIDENT), not keywords (TOK_IDENT..TOK_UIDENT-1) */
-                        if (tcc_state->track_usage && tcc_state->usage_output &&
+                        if (tcc_state->track_usage &&
                             t >= TOK_UIDENT && parlevel == 0) {
                             const char *arg_name = get_tok_str(t, &tokc);
                             const char *macro_name = get_tok_str(v, 0);
                             const char *filename = file ? file->filename : "<unknown>";
-                            JSON_START(tcc_state->usage_output, "MACRO_ARG");
-                            JSON_STR(tcc_state->usage_output, "identifier", arg_name);
-                            JSON_STR(tcc_state->usage_output, "macro", macro_name);
-                            JSON_STR(tcc_state->usage_output, "file", filename);
-                            JSON_END(tcc_state->usage_output);
-                            fflush(tcc_state->usage_output);
+                            JSON_START(tcc_state, "MACRO_ARG");
+                            JSON_STR(tcc_state, "identifier", arg_name);
+                            JSON_STR(tcc_state, "macro", macro_name);
+                            JSON_STR(tcc_state, "file", filename);
+                            JSON_END(tcc_state);
+                            
                         }
                         tok_str_add2_spc(&str, t, &tokc);
                     }
@@ -3643,7 +3643,7 @@ static int macro_subst(
                 goto no_subst;
 
             /* Track macro usage for mincut (USAGE = where macro is expanded) */
-            if (tcc_state->track_usage && tcc_state->usage_output && s->d) {
+            if (tcc_state->track_usage && s->d) {
                 const char *macro_name = get_tok_str(t, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
 
@@ -3675,12 +3675,12 @@ static int macro_subst(
                 }
 
                 /* Output JSON */
-                JSON_START(tcc_state->usage_output, "MACRO_USAGE");
-                JSON_STR(tcc_state->usage_output, "name", macro_name);
-                JSON_STR(tcc_state->usage_output, "value", value_buf);
-                JSON_STR(tcc_state->usage_output, "file", filename);
-                JSON_END(tcc_state->usage_output);
-                fflush(tcc_state->usage_output);
+                JSON_START(tcc_state, "MACRO_USAGE");
+                JSON_STR(tcc_state, "name", macro_name);
+                JSON_STR(tcc_state, "value", value_buf);
+                JSON_STR(tcc_state, "file", filename);
+                JSON_END(tcc_state);
+                
             }
 
             /* if nested substitution, do nothing */
@@ -3759,7 +3759,7 @@ redo:
         Sym *s = define_find(t);
         if (s) {
             /* Track top-level macro usage for mincut */
-            if (tcc_state->track_usage && tcc_state->usage_output && s->d) {
+            if (tcc_state->track_usage && s->d) {
                 const char *macro_name = get_tok_str(t, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
 
@@ -3790,12 +3790,12 @@ redo:
                 }
 
                 /* Output JSON */
-                JSON_START(tcc_state->usage_output, "MACRO_USAGE");
-                JSON_STR(tcc_state->usage_output, "name", macro_name);
-                JSON_STR(tcc_state->usage_output, "value", value_buf);
-                JSON_STR(tcc_state->usage_output, "file", filename);
-                JSON_END(tcc_state->usage_output);
-                fflush(tcc_state->usage_output);
+                JSON_START(tcc_state, "MACRO_USAGE");
+                JSON_STR(tcc_state, "name", macro_name);
+                JSON_STR(tcc_state, "value", value_buf);
+                JSON_STR(tcc_state, "file", filename);
+                JSON_END(tcc_state);
+                
             }
 
             Sym *nested_list = NULL;
@@ -3932,19 +3932,19 @@ ST_FUNC void preprocess_start(TCCState *s1, int filetype)
     tccpp_new(s1);
 
     /* Emit include search paths for usage tracking */
-    if (s1->usage_output && s1->track_usage) {
+    if (s1->track_usage) {
         int i;
         /* Emit -I paths (user include paths) */
         for (i = 0; i < s1->nb_include_paths; i++) {
-            fprintf(s1->usage_output, "{\"event\":\"INCLUDE_SEARCH_PATH\",\"path\":");
-            json_escape_string(s1->usage_output, s1->include_paths[i]);
-            fprintf(s1->usage_output, ",\"index\":%d,\"type\":\"user\"}\n", i);
+            tcc_track_printf(s1, "{\"event\":\"INCLUDE_SEARCH_PATH\",\"path\":");
+            json_escape_string(s1, s1->include_paths[i]);
+            tcc_track_printf(s1, ",\"index\":%d,\"type\":\"user\"}\n", i);
         }
         /* Emit system include paths */
         for (i = 0; i < s1->nb_sysinclude_paths; i++) {
-            fprintf(s1->usage_output, "{\"event\":\"INCLUDE_SEARCH_PATH\",\"path\":");
-            json_escape_string(s1->usage_output, s1->sysinclude_paths[i]);
-            fprintf(s1->usage_output, ",\"index\":%d,\"type\":\"system\"}\n", i);
+            tcc_track_printf(s1, "{\"event\":\"INCLUDE_SEARCH_PATH\",\"path\":");
+            json_escape_string(s1, s1->sysinclude_paths[i]);
+            tcc_track_printf(s1, ",\"index\":%d,\"type\":\"system\"}\n", i);
         }
     }
 
