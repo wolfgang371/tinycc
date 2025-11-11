@@ -5477,6 +5477,8 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
         case TOK_TYPEOF3:
             next();
             parse_expr_type(&type1);
+            /* Track typedef usage in typeof expressions */
+            track_typedef_usage(&type1);
             /* remove all storage modifiers except typedef */
             type1.t &= ~(VT_STORAGE&~VT_TYPEDEF);
             if (type1.ref) {
@@ -6404,6 +6406,8 @@ ST_FUNC void unary(void)
                 vpush(&type);
                 return;
             } else {
+                /* Track typedef usage in cast expressions */
+                track_typedef_usage(&type);
                 unary();
                 gen_cast(&type);
             }
@@ -6503,6 +6507,8 @@ ST_FUNC void unary(void)
         if (tok == '(')
             tok = TOK_SOTYPE;
         expr_type(&type, unary);
+        /* Track typedef usage in sizeof/alignof expressions */
+        track_typedef_usage(&type);
         if (t == TOK_SIZEOF) {
             vpush_type_size(&type, &align);
             gen_cast_s(VT_SIZE_T);
