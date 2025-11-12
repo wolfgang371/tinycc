@@ -6863,6 +6863,16 @@ special_math_val:
 	   regvars.  */
 	vtop->sym = s;
 
+        /* Track function usage when function is referenced as a value (not called) */
+        if (tcc_state->track_usage && ((s->type.t & VT_BTYPE) == VT_FUNC)) {
+            const char *func_name = get_tok_str(t, NULL);
+            const char *filename = file ? file->filename : "<unknown>";
+            JSON_START(tcc_state, "FUNCTION_USAGE");
+            JSON_STR(tcc_state, "name", func_name);
+            JSON_STR(tcc_state, "file", filename);
+            JSON_END(tcc_state);
+        }
+
         /* Track ALL variable usage for mincut (before VT_SYM check) */
         if (tcc_state->track_usage) {
             /* Only track variables, not functions (functions handled elsewhere) */
@@ -8506,6 +8516,18 @@ static int decl_designator(init_params *p, CType *type, unsigned long c,
         struct_field:
             next();
 	    f = find_field(type, l, &cumofs);
+            /* Track field usage in designated initializers for mincut */
+            if (tcc_state->track_usage && f && type->ref) {
+                const char *struct_name;
+                /* Use typedef name if available, otherwise use struct's internal name */
+                if (type->typedef_token) {
+                    struct_name = get_tok_str(type->typedef_token, NULL);
+                } else {
+                    struct_name = get_tok_str(type->ref->v & ~SYM_STRUCT, NULL);
+                }
+                const char *field_name = get_tok_str(l, NULL);
+                track_field_usage_with_type(struct_name, field_name, 0, &f->type);
+            }
             if (cur_field)
                 *cur_field = f;
 	    type = &f->type;
