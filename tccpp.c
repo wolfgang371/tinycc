@@ -1724,7 +1724,7 @@ bad_twosharp:
 
         /* Build parameter list for function-like macros */
         char params_buf[1024] = "";
-        if (t == MACRO_FUNC) {
+        if (t & MACRO_FUNC) {
             Sym *param = first;
             int first_param = 1;
             while (param) {
