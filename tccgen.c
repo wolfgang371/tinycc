@@ -274,7 +274,7 @@ typedef struct {
     char type[256];
 } FieldInfo;
 
-#define MAX_STRUCT_FIELDS 64
+#define MAX_STRUCT_FIELDS 512  /* Increased from 64 to support large structs */
 
 typedef struct {
     FieldInfo fields[MAX_STRUCT_FIELDS];
