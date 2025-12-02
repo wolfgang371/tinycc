@@ -1723,22 +1723,25 @@ bad_twosharp:
         const char *filename = file ? file->filename : "<unknown>";
 
         /* Build parameter list for function-like macros */
-        char params_buf[1024] = "";
+        CString params_buf;
+        cstr_new(&params_buf);
         if (t & MACRO_FUNC) {
             Sym *param = first;
             int first_param = 1;
             while (param) {
                 if (!first_param)
-                    strcat(params_buf, ",");
+                    cstr_cat(&params_buf, ",", -1);
                 const char *param_name = get_tok_str(param->v & ~SYM_FIELD, NULL);
-                strcat(params_buf, param_name);
+                cstr_cat(&params_buf, param_name, -1);
                 first_param = 0;
                 param = param->next;
             }
         }
+        cstr_ccat(&params_buf, '\0');
 
         /* Build macro expansion value */
-        char value_buf[4096] = "";
+        CString value_buf;
+        cstr_new(&value_buf);
         const int *p = str.str;
         CValue cv;
         int tok_val;
@@ -1749,28 +1752,31 @@ bad_twosharp:
             if (tok_val == TOK_CINT || tok_val == TOK_CCHAR) {
                 char num_buf[32];
                 snprintf(num_buf, sizeof(num_buf), "%d ", (int)cv.i);
-                strcat(value_buf, num_buf);
+                cstr_cat(&value_buf, num_buf, -1);
             } else if (tok_val == TOK_STR) {
-                strcat(value_buf, "\"");
-                strcat(value_buf, (char *)cv.str.data);
-                strcat(value_buf, "\" ");
+                cstr_cat(&value_buf, "\"", -1);
+                cstr_cat(&value_buf, (char *)cv.str.data, -1);
+                cstr_cat(&value_buf, "\" ", -1);
             } else {
                 const char *tok_str = get_tok_str(tok_val, &cv);
                 if (tok_str && tok_str[0]) {
-                    strcat(value_buf, tok_str);
-                    strcat(value_buf, " ");
+                    cstr_cat(&value_buf, tok_str, -1);
+                    cstr_cat(&value_buf, " ", -1);
                 }
             }
         }
+        cstr_ccat(&value_buf, '\0');
 
         /* Output JSON */
         JSON_START(tcc_state, "MACRO_DECL");
         JSON_STR(tcc_state, "name", macro_name);
-        JSON_STR(tcc_state, "params", params_buf[0] ? params_buf : "");
-        JSON_STR(tcc_state, "value", value_buf);
+        JSON_STR(tcc_state, "params", params_buf.size > 1 ? params_buf.data : "");
+        JSON_STR(tcc_state, "value", value_buf.data);
         JSON_STR(tcc_state, "file", filename);
         JSON_END(tcc_state);
-        
+
+        cstr_free(&params_buf);
+        cstr_free(&value_buf);
     }
 
     define_push(v, t, str.str, first);
@@ -3648,7 +3654,8 @@ static int macro_subst(
                 const char *filename = file ? file->filename : "<unknown>";
 
                 /* Build macro expansion value */
-                char value_buf[4096] = "";
+                CString value_buf;
+                cstr_new(&value_buf);
                 const int *p = s->d;
                 CValue cv;
                 int tok;
@@ -3659,28 +3666,30 @@ static int macro_subst(
                     if (tok == TOK_CINT || tok == TOK_CCHAR) {
                         char tmp[32];
                         snprintf(tmp, sizeof(tmp), "%d ", (int)cv.i);
-                        strcat(value_buf, tmp);
+                        cstr_cat(&value_buf, tmp, -1);
                     } else if (tok == TOK_STR) {
-                        strcat(value_buf, "\"");
-                        strcat(value_buf, (char *)cv.str.data);
-                        strcat(value_buf, "\" ");
+                        cstr_cat(&value_buf, "\"", -1);
+                        cstr_cat(&value_buf, (char *)cv.str.data, -1);
+                        cstr_cat(&value_buf, "\" ", -1);
                     } else {
                         /* Use get_tok_str for all other tokens (identifiers and operators) */
                         const char *tok_str = get_tok_str(tok, &cv);
                         if (tok_str && tok_str[0]) {
-                            strcat(value_buf, tok_str);
-                            strcat(value_buf, " ");
+                            cstr_cat(&value_buf, tok_str, -1);
+                            cstr_cat(&value_buf, " ", -1);
                         }
                     }
                 }
+                cstr_ccat(&value_buf, '\0');
 
                 /* Output JSON */
                 JSON_START(tcc_state, "MACRO_USAGE");
                 JSON_STR(tcc_state, "name", macro_name);
-                JSON_STR(tcc_state, "value", value_buf);
+                JSON_STR(tcc_state, "value", value_buf.data);
                 JSON_STR(tcc_state, "file", filename);
                 JSON_END(tcc_state);
-                
+
+                cstr_free(&value_buf);
             }
 
             /* if nested substitution, do nothing */
@@ -3764,7 +3773,8 @@ redo:
                 const char *filename = file ? file->filename : "<unknown>";
 
                 /* Build macro expansion value */
-                char value_buf[4096] = "";
+                CString value_buf;
+                cstr_new(&value_buf);
                 const int *p = s->d;
                 CValue cv;
                 int tok_exp;
@@ -3775,27 +3785,29 @@ redo:
                     if (tok_exp == TOK_CINT || tok_exp == TOK_CCHAR) {
                         char tmp[32];
                         snprintf(tmp, sizeof(tmp), "%d ", (int)cv.i);
-                        strcat(value_buf, tmp);
+                        cstr_cat(&value_buf, tmp, -1);
                     } else if (tok_exp == TOK_STR) {
-                        strcat(value_buf, "\"");
-                        strcat(value_buf, (char *)cv.str.data);
-                        strcat(value_buf, "\" ");
+                        cstr_cat(&value_buf, "\"", -1);
+                        cstr_cat(&value_buf, (char *)cv.str.data, -1);
+                        cstr_cat(&value_buf, "\" ", -1);
                     } else {
                         const char *tok_str = get_tok_str(tok_exp, &cv);
                         if (tok_str && tok_str[0]) {
-                            strcat(value_buf, tok_str);
-                            strcat(value_buf, " ");
+                            cstr_cat(&value_buf, tok_str, -1);
+                            cstr_cat(&value_buf, " ", -1);
                         }
                     }
                 }
+                cstr_ccat(&value_buf, '\0');
 
                 /* Output JSON */
                 JSON_START(tcc_state, "MACRO_USAGE");
                 JSON_STR(tcc_state, "name", macro_name);
-                JSON_STR(tcc_state, "value", value_buf);
+                JSON_STR(tcc_state, "value", value_buf.data);
                 JSON_STR(tcc_state, "file", filename);
                 JSON_END(tcc_state);
-                
+
+                cstr_free(&value_buf);
             }
 
             Sym *nested_list = NULL;
