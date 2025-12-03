@@ -5538,6 +5538,13 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                     while (field && field_list.count < MAX_STRUCT_FIELDS) {
                         if (field->v) {
                             const char *field_name = get_tok_str(field->v & ~SYM_FIELD, NULL);
+
+                            /* Skip fields with invalid names (compiler-generated like "L.8") */
+                            if (strchr(field_name, '.')) {
+                                field = field->next;
+                                continue;
+                            }
+
                             char field_type_buf[256];
 
                             /* Check if this is an array field */
@@ -5614,7 +5621,10 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
                     }
 
                     /* Output JSON */
-                    JSON_START(tcc_state, "TYPEDEF_STRUCT");
+                    /* Detect if this is a union or struct */
+                    int is_union = IS_UNION(s->type.t);
+                    const char *event_name = is_union ? "TYPEDEF_UNION" : "TYPEDEF_STRUCT";
+                    JSON_START(tcc_state, event_name);
                     JSON_STR(tcc_state, "name", typedef_name);
 
                     /* Emit fields array */
