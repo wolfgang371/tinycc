@@ -1503,6 +1503,16 @@ static int parse_include(TCCState *s1, int do_next, int test)
 #ifdef INC_DEBUG
             printf("%s: skipping cached %s\n", file->filename, buf);
 #endif
+            /* track include even when skipped (for isolation tooling) */
+            if (tcc_state) {
+                const char *include_type = (c == '<') ? "system" : "local";
+                tcc_track_printf(tcc_state,
+                    "{\"event\":\"INCLUDE\",\"file\":\"%s\",\"included\":\"%s\",\"included_path\":\"%s\",\"type\":\"%s\"}\n",
+                    file->filename,        /* file that contains the #include */
+                    name,                  /* include name as written */
+                    buf,                   /* full resolved path */
+                    include_type);         /* "system" (<>) or "local" ("") */
+            }
             if ((s1->verbose | 1) == 3) /* -vv[v] */
                 printf("=> %*s%s\n",
                    (int)(s1->include_stack_ptr - s1->include_stack), "", buf);
