@@ -552,7 +552,20 @@ static void track_typedef_usage(CType *type)
         JSON_STR(tcc_state, "name", typedef_name);
         JSON_STR(tcc_state, "file", filename);
         JSON_END(tcc_state);
-        
+
+    }
+
+    /* Track enum type usage */
+    if (IS_ENUM(type->t) && type->ref && type->ref->v) {
+        int v = type->ref->v & ~SYM_STRUCT;
+        if (v < SYM_FIRST_ANOM) {  /* Not anonymous */
+            const char *enum_name = get_tok_str(v, NULL);
+            const char *filename = file ? file->filename : "<unknown>";
+            JSON_START(tcc_state, "ENUM_TYPE_USAGE");
+            JSON_STR(tcc_state, "name", enum_name);
+            JSON_STR(tcc_state, "file", filename);
+            JSON_END(tcc_state);
+        }
     }
 
     /* For pointer types, also check the pointed-to type */
