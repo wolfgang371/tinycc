@@ -1956,13 +1956,16 @@ pragma_err:
     tcc_error("malformed #pragma directive");
 }
 
-/* put alternative filename */
-ST_FUNC void tccpp_putfile(const char *filename)
+/* put alternative filename
+   from_line_marker: 1 if called from # line marker in preprocessed input,
+                     0 if called from normal #include processing */
+ST_FUNC void tccpp_putfile(const char *filename, int from_line_marker)
 {
     char buf[1024];
     buf[0] = 0;
-    if (!IS_ABSPATH(filename)) {
-        /* prepend directory from real file */
+    if (!IS_ABSPATH(filename) && !from_line_marker) {
+        /* prepend directory from real file (but not for line markers,
+           to preserve relative paths from preprocessed input) */
         pstrcpy(buf, sizeof buf, file->true_filename);
         *tcc_basename(buf) = 0;
     }
@@ -2123,7 +2126,7 @@ ST_FUNC void preprocess(int is_bof)
             if (tok != TOK_PPSTR || tokc.str.data[0] != '"')
                 goto _line_err;
             tokc.str.data[tokc.str.size - 2] = 0;
-            tccpp_putfile(tokc.str.data + 1);
+            tccpp_putfile(tokc.str.data + 1, 1);  /* 1 = from line marker */
             next();
             /* skip optional level number & advance to next line */
             skip_to_eol(c);

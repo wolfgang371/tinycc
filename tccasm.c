@@ -786,7 +786,7 @@ static void asm_parse_directive(TCCState *s1, int global)
                 skip_to_eol(0);
                 break;
             }
-            tccpp_putfile(p);
+            tccpp_putfile(p, 0);  /* 0 = not from line marker */
             next();
         }
         break;

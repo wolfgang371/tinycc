@@ -9470,7 +9470,7 @@ static void gen_inline_functions(TCCState *s)
                 /* the function was used or forced (and then not internal):
                    generate its code and convert it to a normal function */
                 fn->sym = NULL;
-                tccpp_putfile(fn->filename);
+                tccpp_putfile(fn->filename, 0);  /* 0 = not from line marker */
                 begin_macro(fn->func_str, 1);
                 next();
                 cur_text_section = text_section;
