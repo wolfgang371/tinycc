@@ -5219,6 +5219,9 @@ do_decl:
                             /* Collect type dependencies */
                             collect_type_dependencies(&type1, 1, &dep_list);
 
+                            /* Track typedef and enum type usage in field type */
+                            track_typedef_usage(&type1);
+
                             /* Output JSON */
                             JSON_START(tcc_state, "FIELD_DECL");
                             JSON_STR(tcc_state, "struct", struct_name);
