@@ -547,12 +547,13 @@ static void track_typedef_usage(CType *type)
     /* Track typedef usage - recursively check type for typedef tokens */
     if (type->typedef_token) {
         const char *typedef_name = get_tok_str(type->typedef_token, NULL);
-        const char *filename = file ? file->filename : "<unknown>";
-        JSON_START(tcc_state, "TYPEDEF_USAGE");
-        JSON_STR(tcc_state, "name", typedef_name);
-        JSON_STR(tcc_state, "file", filename);
-        JSON_END(tcc_state);
-
+        if (typedef_name && typedef_name[0]) {  /* Skip if null or empty */
+            const char *filename = file ? file->filename : "<unknown>";
+            JSON_START(tcc_state, "TYPEDEF_USAGE");
+            JSON_STR(tcc_state, "name", typedef_name);
+            JSON_STR(tcc_state, "file", filename);
+            JSON_END(tcc_state);
+        }
     }
 
     /* Track enum type usage */
@@ -560,11 +561,13 @@ static void track_typedef_usage(CType *type)
         int v = type->ref->v & ~SYM_STRUCT;
         if (v < SYM_FIRST_ANOM) {  /* Not anonymous */
             const char *enum_name = get_tok_str(v, NULL);
-            const char *filename = file ? file->filename : "<unknown>";
-            JSON_START(tcc_state, "ENUM_TYPE_USAGE");
-            JSON_STR(tcc_state, "name", enum_name);
-            JSON_STR(tcc_state, "file", filename);
-            JSON_END(tcc_state);
+            if (enum_name && enum_name[0]) {  /* Skip if null or empty */
+                const char *filename = file ? file->filename : "<unknown>";
+                JSON_START(tcc_state, "ENUM_TYPE_USAGE");
+                JSON_STR(tcc_state, "name", enum_name);
+                JSON_STR(tcc_state, "file", filename);
+                JSON_END(tcc_state);
+            }
         }
     }
 

@@ -1581,13 +1581,24 @@ static int expr_preprocess(TCCState *s1)
             parse_flags &= ~PARSE_FLAG_PREPROCESS; /* no macro subst */
             next();
             t = tok;
-            if (t == '(') 
+            if (t == '(')
                 next();
             parse_flags |= PARSE_FLAG_PREPROCESS;
             if (tok < TOK_IDENT)
                 expect("identifier after 'defined'");
             if (s1->run_test)
                 maybe_run_test(s1);
+
+            /* Track macro defined() tests for mincut */
+            if (s1->track_usage) {
+                const char *macro_name = get_tok_str(tok, NULL);
+                const char *filename = file ? file->filename : "<unknown>";
+                JSON_START(s1, "MACRO_IFDEF");
+                JSON_STR(s1, "name", macro_name);
+                JSON_STR(s1, "file", filename);
+                JSON_END(s1);
+            }
+
             c = 0;
             if (define_find(tok)
                 || tok == TOK___HAS_INCLUDE
@@ -2041,6 +2052,28 @@ ST_FUNC void preprocess(int is_bof)
                 file->ifndef_macro = tok;
             }
         }
+
+        /* Track macro ifdef/ifndef tests for mincut */
+        if (tcc_state->track_usage) {
+            const char *macro_name = get_tok_str(tok, NULL);
+            const char *filename = file ? file->filename : "<unknown>";
+
+            /* Track #ifdef always, #ifndef only if not an include guard */
+            if (c == 0) {
+                /* #ifdef - always track */
+                JSON_START(tcc_state, "MACRO_IFDEF");
+                JSON_STR(tcc_state, "name", macro_name);
+                JSON_STR(tcc_state, "file", filename);
+                JSON_END(tcc_state);
+            } else if (!is_bof) {
+                /* #ifndef - only track if not at beginning of file (not an include guard) */
+                JSON_START(tcc_state, "MACRO_IFNDEF");
+                JSON_STR(tcc_state, "name", macro_name);
+                JSON_STR(tcc_state, "file", filename);
+                JSON_END(tcc_state);
+            }
+        }
+
         if (define_find(tok)
             || tok == TOK___HAS_INCLUDE
             || tok == TOK___HAS_INCLUDE_NEXT)
