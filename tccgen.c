@@ -10032,8 +10032,8 @@ static int decl(int l)
                             
                         }
 
-                        /* Track typedef usage in global variable declaration for mincut */
-                        if (tcc_state->track_usage && l == VT_CONST) {
+                        /* Track typedef usage in variable declaration (global and static) for mincut */
+                        if (tcc_state->track_usage && (l == VT_CONST || (type.t & VT_STATIC))) {
                             track_typedef_usage(&type);
                         }
 
