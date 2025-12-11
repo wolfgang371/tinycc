@@ -10031,6 +10031,7 @@ static int decl(int l)
                             JSON_STR(tcc_state, "type", type_buf);
                             JSON_STR(tcc_state, "scope", scope);
                             JSON_STR(tcc_state, "file", filename);
+                            JSON_BOOL(tcc_state, "has_init", has_init);
                             JSON_END(tcc_state);
                             
                         }
