@@ -1602,6 +1602,7 @@ enum {
     TCC_OPTION_run,
     TCC_OPTION_w,
     TCC_OPTION_E,
+    TCC_OPTION_Ei,
     TCC_OPTION_M,
     TCC_OPTION_MD,
     TCC_OPTION_MF,
@@ -1684,6 +1685,7 @@ static const TCCOption tcc_options[] = {
     { "nostdlib", TCC_OPTION_nostdlib, 0 },
     { "print-search-dirs", TCC_OPTION_print_search_dirs, 0 },
     { "w", TCC_OPTION_w, 0 },
+    { "Ei", TCC_OPTION_Ei, 0},
     { "E", TCC_OPTION_E, 0},
     { "M", TCC_OPTION_M, 0},
     { "MM", TCC_OPTION_MM, 0},
@@ -2102,6 +2104,10 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
             break;
         case TCC_OPTION_E:
             x = TCC_OUTPUT_PREPROCESS;
+            goto set_output_type;
+        case TCC_OPTION_Ei:
+            x = TCC_OUTPUT_PREPROCESS;
+            s->include_only_preprocess = 1;
             goto set_output_type;
         case TCC_OPTION_P:
             s->Pflag = atoi(optarg) + 1;

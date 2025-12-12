@@ -797,6 +797,7 @@ struct TCCState {
 
     unsigned char dflag; /* -dX value */
     unsigned char Pflag; /* -P switch (LINE_MACRO_OUTPUT_FORMAT) */
+    unsigned char include_only_preprocess; /* -Ei: include-only preprocess (no macro expansion) */
 
 #ifdef TCC_TARGET_X86_64
     unsigned char nosse; /* For -mno-sse support. */

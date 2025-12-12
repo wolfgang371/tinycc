@@ -1993,6 +1993,10 @@ ST_FUNC void tccpp_putfile(const char *filename, int from_line_marker)
     tcc_debug_newfile(tcc_state);
 }
 
+/* Forward declarations for -Ei mode */
+static void pp_line(TCCState *s1, BufferedFile *f, int level);
+static void define_print(TCCState *s1, int v);
+
 /* is_bof is true if first non space token at beginning of file */
 ST_FUNC void preprocess(int is_bof)
 {
@@ -2017,6 +2021,11 @@ ST_FUNC void preprocess(int is_bof)
         next_nomacro();
         pp_debug_symv = tok;
         parse_define();
+        /* In -Ei mode, output the #define directive */
+        if (s1->include_only_preprocess && s1->ppfp) {
+            pp_line(s1, file, 0);
+            define_print(s1, pp_debug_symv);
+        }
         break;
     case TOK_UNDEF:
         pp_debug_tok = tok;
@@ -3854,6 +3863,13 @@ redo:
                 JSON_END(tcc_state);
 
                 cstr_free(&value_buf);
+            }
+
+            /* In -Ei mode, skip macro expansion - keep macro name as-is */
+            /* But allow expansion during #if/#elif expression evaluation (pp_expr is set) */
+            if (tcc_state->include_only_preprocess && !pp_expr) {
+                /* Don't expand, just return the macro identifier */
+                return;
             }
 
             Sym *nested_list = NULL;
