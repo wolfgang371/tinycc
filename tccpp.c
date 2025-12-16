@@ -28,6 +28,7 @@
 /* Helper macros for JSON output (s = TCCState*) */
 #define JSON_START(s, event) tcc_track_printf(s, "{\"event\":\"%s\"", event)
 #define JSON_STR(s, key, val) do { tcc_track_printf(s, ",\"%s\":", key); json_escape_string(s, val); } while(0)
+#define JSON_BOOL(s, key, val) tcc_track_printf(s, ",\"%s\":%s", key, (val) ? "true" : "false")
 #define JSON_END(s) tcc_track_printf(s, "}\n")
 
 /* ------------------------------------------------------------------------- */
@@ -1794,6 +1795,7 @@ bad_twosharp:
         JSON_STR(tcc_state, "params", params_buf.size > 1 ? params_buf.data : "");
         JSON_STR(tcc_state, "value", value_buf.data);
         JSON_STR(tcc_state, "file", filename);
+        JSON_BOOL(tcc_state, "func", (t & MACRO_FUNC) != 0);
         JSON_END(tcc_state);
 
         cstr_free(&params_buf);
