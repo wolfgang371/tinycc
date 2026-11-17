@@ -1,0 +1,139 @@
+name: Release
+
+# Builds the instrumented tcc for Linux and Windows and attaches both to the GitHub Release of a version tag (v*).
+# It can also be run by hand for an existing tag (workflow_dispatch).
+#
+#   Linux   -> tinycc-track-linux-x86_64.tar.gz   `make install` with prefix /usr/local, rooted at usr/local:
+#                                                 sudo tar -xzf tinycc-track-linux-x86_64.tar.gz -C /
+#   Windows -> tinycc-track-windows-x64.zip       a self-contained tcc directory (tcc.exe, libtcc.dll, include/,
+#                                                 lib/), relocatable: tcc.exe finds its files next to itself.
+#
+# Every asset is built and passes upstream's test suite and the tracking smoke test (tests/tracking/run.sh) in its
+# own job before it is uploaded. The release stays a DRAFT until both build jobs have passed. Only the final publish
+# job makes it public, so a failing job leaves a draft nobody sees. Asset names carry no version, so a page can link
+# /releases/latest/download/<asset>; the version is the release title.
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v0.9.28-track.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # Create the release ONCE, as a draft, before the parallel build jobs attach their assets: if each build job
+  # created it, they would race and the loser would fail with "already_exists".
+  create_release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure the GitHub Release exists, as a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if draft=$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null); then
+            echo "Release $TAG already exists (draft: $draft); reusing it as it is."
+          else
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" --notes "" --verify-tag --draft
+          fi
+
+  linux:
+    needs: create_release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: configure + make + tests
+        run: |
+          ./configure --prefix=/usr/local
+          make
+          make test -k
+          tests/tracking/run.sh ./tcc
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          make install DESTDIR="$PWD/stage"
+          tar -czf tinycc-track-linux-x86_64.tar.gz -C stage usr
+          tar -tzf tinycc-track-linux-x86_64.tar.gz | grep -q '^usr/local/bin/tcc$'
+
+      - name: Upload to the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" tinycc-track-linux-x86_64.tar.gz --repo "$REPO" --clobber
+
+  windows:
+    needs: create_release
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Check out text as committed (no CRLF)
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: MSYS2 mingw64 gcc
+        shell: cmd
+        run: |
+          set MSYS2_PATH_TYPE=inherit
+          set MSYSTEM=MINGW64
+          set CHERE_INVOKING=yes
+          C:\msys64\usr\bin\bash -l -c "pacman -S --noconfirm --needed mingw-w64-x86_64-gcc make"
+
+      # On Windows `make install` lays out a self-contained directory under the prefix. The packaged tcc.exe is
+      # then run once from there, outside the source tree, to prove the zip works on its own.
+      - name: configure + make + tests + install
+        shell: cmd
+        run: |
+          set MSYS2_PATH_TYPE=inherit
+          set MSYSTEM=MINGW64
+          set CHERE_INVOKING=yes
+          C:\msys64\usr\bin\bash -l -c "./configure --prefix=$PWD/dist/tcc && make && make test -k && tests/tracking/run.sh ./tcc && make install"
+          C:\msys64\usr\bin\bash -l -c "cd dist && printf '#include <stdio.h>\nint main(void){puts(\"hi\");return 0;}\n' > t.c && tcc/tcc.exe -t t.track t.c -o t.exe && ./t.exe && test -s t.track && rm t.c t.exe t.track"
+
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path dist/tcc -DestinationPath tinycc-track-windows-x64.zip
+
+      - name: Upload to the Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" tinycc-track-windows-x64.zip --repo "$REPO" --clobber
+
+  # Both build jobs passed: make the draft public. Latest only for the highest release version (no '-' suffix),
+  # so a re-run for an older tag does not take /releases/latest away from the newest release.
+  publish:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          newest=$( { gh release list --repo "$REPO" --exclude-drafts --limit 200 --json tagName --jq '.[].tagName'; echo "$TAG"; } |
+            grep -E '^v[0-9][^-]*$' | sort -V | tail -1 || true)
+          latest=false
+          if [ -n "$newest" ] && [ "$newest" = "$TAG" ]; then latest=true; fi
+          gh release edit "$TAG" --repo "$REPO" --draft=false --latest="$latest"
+          echo "Release $TAG published (latest: $latest)."

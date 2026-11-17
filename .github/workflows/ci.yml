@@ -1,0 +1,85 @@
+name: CI
+
+# Build + test the instrumented tcc (branch `instrumentation`: upstream TinyCC plus the -t symbol tracking that
+# mincut's isolator reads) on Linux and Windows. Upstream's own workflow (build.yml) stays untouched and only runs
+# for pushes to `mob`, the plain upstream mirror.
+#
+# Each job runs three things, all runnable locally from the source root:
+#   - upstream's test suite (`make test -k`): the instrumentation must not change what tcc compiles,
+#   - tests/tracking/run.sh: the -t output mincut relies on (events, JSON lines, no track file after a failed
+#     compile). On Windows it exercises the _WIN32 tracking path (a manual buffer instead of open_memstream).
+#   - Windows only: the MSVC build (win32/build-tcc.bat), as upstream checks it, plus the tracking test on that build.
+
+on:
+  push:
+    branches: [ instrumentation ]
+  pull_request:
+  # catch runner-image drift (compilers, MSYS2 packages) even when nothing is pushed. Weekly, Monday 06:00 UTC.
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: configure + make
+        run: ./configure && make
+
+      - name: upstream test suite
+        run: make test -k
+
+      - name: tracking smoke test (-t)
+        run: tests/tracking/run.sh ./tcc
+
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      # The runner's git checks text out with CRLF; the shell scripts (configure, tests/tracking/run.sh) want LF.
+      - name: Check out text as committed (no CRLF)
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - name: MSYS2 mingw64 gcc
+        shell: cmd
+        run: |
+          set MSYS2_PATH_TYPE=inherit
+          set MSYSTEM=MINGW64
+          set CHERE_INVOKING=yes
+          C:\msys64\usr\bin\bash -l -c "pacman -S --noconfirm --needed mingw-w64-x86_64-gcc make"
+
+      - name: configure + make + upstream test suite + tracking smoke test (MSYS2 mingw64)
+        shell: cmd
+        run: |
+          set MSYS2_PATH_TYPE=inherit
+          set MSYSTEM=MINGW64
+          set CHERE_INVOKING=yes
+          C:\msys64\usr\bin\bash -l -c "./configure && make && make test -k && tests/tracking/run.sh ./tcc"
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      # A separate out-of-tree copy: build-tcc.bat writes into win32/, where the MSYS2 build above left its files.
+      - name: MSVC build (win32/build-tcc.bat) + libtcc test
+        shell: cmd
+        run: |
+          git worktree add ..\msvc HEAD
+          cd ..\msvc\win32
+          call build-tcc.bat -t 64 -c cl || exit /b 1
+          .\tcc -I.. libtcc.dll -v ../tests/libtcc_test.c -o libtest.exe && .\libtest.exe || exit /b 1
+
+      - name: tracking smoke test on the MSVC build
+        shell: cmd
+        run: |
+          set MSYS2_PATH_TYPE=inherit
+          set MSYSTEM=MINGW64
+          set CHERE_INVOKING=yes
+          cd ..\msvc
+          C:\msys64\usr\bin\bash -l -c "tests/tracking/run.sh win32/tcc.exe"
