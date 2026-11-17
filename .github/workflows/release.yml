@@ -3,8 +3,8 @@ name: Release
 # Builds the instrumented tcc for Linux and Windows and attaches both to the GitHub Release of a version tag (v*).
 # It can also be run by hand for an existing tag (workflow_dispatch).
 #
-#   Linux   -> tinycc-track-linux-x86_64.tar.gz   `make install` with prefix /usr/local, rooted at usr/local:
-#                                                 sudo tar -xzf tinycc-track-linux-x86_64.tar.gz -C /
+#   Linux   -> tinycc-track-linux-x86_64.tar.gz   a relocatable tinycc-track/ directory (.github/package-linux.sh):
+#                                                 tinycc-track/bin/tcc -B tinycc-track/lib/tcc ...
 #   Windows -> tinycc-track-windows-x64.zip       a self-contained tcc directory (tcc.exe, libtcc.dll, include/,
 #                                                 lib/), relocatable: tcc.exe finds its files next to itself.
 #   Windows -> tinycc-track-windows-x64-standalone.exe   ONE file: headers and runtime embedded
@@ -57,17 +57,13 @@ jobs:
 
       - name: configure + make + tests
         run: |
-          ./configure --prefix=/usr/local
+          ./configure
           make
           make test -k
           tests/tracking/run.sh ./tcc
 
-      - name: Package
-        run: |
-          set -euo pipefail
-          make install DESTDIR="$PWD/stage"
-          tar -czf tinycc-track-linux-x86_64.tar.gz -C stage usr
-          tar -tzf tinycc-track-linux-x86_64.tar.gz | grep -q '^usr/local/bin/tcc$'
+      - name: Package (relocatable tinycc-track/, checked from outside the tree)
+        run: .github/package-linux.sh tinycc-track-linux-x86_64.tar.gz
 
       - name: Upload to the Release
         env:

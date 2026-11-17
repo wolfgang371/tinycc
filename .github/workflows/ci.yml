@@ -15,7 +15,7 @@ name: CI
 # includes math.h / windows.h is compiled, linked and run.
 #
 # Every run uploads its binaries as artifacts (Actions -> the run -> Artifacts, kept 14 days):
-#   tinycc-track-linux-x86_64   `make install` tree (prefix /usr/local)
+#   tinycc-track-linux-x86_64   the release tarball: relocatable tinycc-track/ (.github/package-linux.sh)
 #   tinycc-track-windows-x64-standalone   the single-file tcc.exe
 # Versioned downloads come from release.yml (a v* tag).
 
@@ -44,13 +44,13 @@ jobs:
       - name: tracking smoke test (-t)
         run: tests/tracking/run.sh ./tcc
 
-      - name: install tree for the artifact
-        run: make install DESTDIR="$PWD/stage"
+      - name: package (relocatable tinycc-track/, checked from outside the tree)
+        run: .github/package-linux.sh tinycc-track-linux-x86_64.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
           name: tinycc-track-linux-x86_64
-          path: stage/
+          path: tinycc-track-linux-x86_64.tar.gz
           retention-days: 14
 
   windows-standalone-build:
