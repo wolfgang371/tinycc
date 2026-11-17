@@ -1,7 +1,7 @@
 #!/bin/sh
 # Smoke test of the -t symbol tracking (the mincut instrumentation).
 #
-#   tests/tracking/run.sh [path/to/tcc]        (default: ./tcc, run from the source root)
+#   tests/tracking/run.sh [path/to/tcc] [--standalone]    (default: ./tcc, run from the source root)
 #
 # Runs anywhere `make test` runs: Linux, and MSYS2 on Windows (where ./tcc finds tcc.exe). It checks
 #   1. a successful compile writes the track file, one JSON object per line,
@@ -17,10 +17,16 @@ OUT=${TMPDIR:-/tmp}/tcc-tracking-$$
 mkdir -p "$OUT"
 trap 'rm -rf "$OUT"' EXIT
 
-case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*) FLAGS="-B$TOP/win32 -I$TOP/include -I$TOP/win32/include" ;;
-  *)                    FLAGS="-B$TOP -I$TOP/include" ;;
-esac
+# An in-tree build is pointed at its headers and runtime. The standalone tcc.exe (win32/build-standalone.sh)
+# carries its own and is run without such flags: pass --standalone as the second argument.
+if [ "${2:-}" = --standalone ]; then
+  FLAGS=""
+else
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) FLAGS="-B$TOP/win32 -I$TOP/include -I$TOP/win32/include" ;;
+    *)                    FLAGS="-B$TOP -I$TOP/include" ;;
+  esac
+fi
 
 fail() { echo "FAIL: $*"; exit 1; }
 

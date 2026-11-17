@@ -7,6 +7,8 @@ name: Release
 #                                                 sudo tar -xzf tinycc-track-linux-x86_64.tar.gz -C /
 #   Windows -> tinycc-track-windows-x64.zip       a self-contained tcc directory (tcc.exe, libtcc.dll, include/,
 #                                                 lib/), relocatable: tcc.exe finds its files next to itself.
+#   Windows -> tinycc-track-windows-x64-standalone.exe   ONE file: headers and runtime embedded
+#                                                 (win32/build-standalone.sh, cross-built on Linux, tested on Windows).
 #
 # Every asset is built and passes upstream's test suite and the tracking smoke test (tests/tracking/run.sh) in its
 # own job before it is uploaded. The release stays a DRAFT until both build jobs have passed. Only the final publish
@@ -118,10 +120,72 @@ jobs:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: gh release upload "$TAG" tinycc-track-windows-x64.zip --repo "$REPO" --clobber
 
-  # Both build jobs passed: make the draft public. Latest only for the highest release version (no '-' suffix),
+  standalone-build:
+    needs: create_release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: mingw-w64
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mingw-w64
+
+      - name: build the standalone tcc.exe
+        run: win32/build-standalone.sh "$PWD/build-standalone"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: standalone
+          path: build-standalone/tcc.exe
+          retention-days: 3
+
+  # Uploaded only after it worked on Windows, from a directory holding nothing but itself.
+  standalone:
+    needs: standalone-build
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Check out text as committed (no CRLF)
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: standalone
+          path: standalone
+
+      - name: compile, link and run a program, then the tracking smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/alone" && cp standalone/tcc.exe "$RUNNER_TEMP/alone/"
+          ( cd "$RUNNER_TEMP/alone"
+            printf '%s\n' '#include <stdio.h>' '#include <math.h>' '#include <sys/time.h>' '#include <windows.h>' \
+              'int main(void){ printf("%g\n", sqrt(2.25)); return GetCurrentProcessId() ? 0 : 1; }' > t.c
+            ./tcc.exe -t t.track t.c -o t.exe
+            test "$(./t.exe | tr -d '\r')" = 1.5
+            test -s t.track )
+          tests/tracking/run.sh standalone/tcc.exe --standalone
+          cp standalone/tcc.exe tinycc-track-windows-x64-standalone.exe
+
+      - name: Upload to the Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" tinycc-track-windows-x64-standalone.exe --repo "$REPO" --clobber
+
+  # Every build job passed: make the draft public. Latest only for the highest release version (no '-' suffix),
   # so a re-run for an older tag does not take /releases/latest away from the newest release.
   publish:
-    needs: [linux, windows]
+    needs: [linux, windows, standalone]
     runs-on: ubuntu-latest
     steps:
       - name: Publish the release
