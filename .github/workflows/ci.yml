@@ -1,12 +1,12 @@
 name: CI
 
 # Build + test the instrumented tcc (branch `instrumentation`: upstream TinyCC plus the -t symbol tracking that
-# mincut's isolator reads) on Linux and Windows. Upstream's own workflow (build.yml) stays untouched and only runs
+# a stub generator reads) on Linux and Windows. Upstream's own workflow (build.yml) stays untouched and only runs
 # for pushes to `mob`, the plain upstream mirror.
 #
 # Each job runs three things, all runnable locally from the source root:
 #   - upstream's test suite (`make test -k`): the instrumentation must not change what tcc compiles,
-#   - tests/tracking/run.sh: the -t output mincut relies on (events, JSON lines, no track file after a failed
+#   - tests/tracking/run.sh: the -t output tools rely on (events, JSON lines, no track file after a failed
 #     compile). On Windows it exercises the _WIN32 tracking path (a manual buffer instead of open_memstream).
 #   - Windows only: the MSVC build (win32/build-tcc.bat), as upstream checks it, plus the tracking test on that build.
 #

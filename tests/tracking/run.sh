@@ -1,11 +1,11 @@
 #!/bin/sh
-# Smoke test of the -t symbol tracking (the mincut instrumentation).
+# Smoke test of the -t symbol tracking (the -t instrumentation).
 #
 #   tests/tracking/run.sh [path/to/tcc] [--standalone]    (default: ./tcc, run from the source root)
 #
 # Runs anywhere `make test` runs: Linux, and MSYS2 on Windows (where ./tcc finds tcc.exe). It checks
 #   1. a successful compile writes the track file, one JSON object per line,
-#   2. every symbol kind mincut relies on is reported with the file it is used in (sample.c) or declared in
+#   2. every symbol kind is reported with the file it is used in (sample.c) or declared in
 #      (sample.h): function call, extern variable, macro, typedef, struct/union with its kind, field access,
 #   3. a failed compile leaves no track file behind (not even a stale one from an earlier run).
 set -eu
@@ -50,7 +50,7 @@ else
   if grep -v '^{"event":".*}$' "$OUT/sample.track" | grep -q .; then fail "track file has a non-event line"; fi
 fi
 
-# --- 2. the symbols mincut needs --------------------------------------------------------------------------------
+# --- 2. the symbols, by kind ------------------------------------------------------------------------------------
 expect() { # <what> <extended regex>
   grep -Eq "$2" "$OUT/sample.track" || fail "missing $1  (pattern: $2)"
   echo "ok   $1"

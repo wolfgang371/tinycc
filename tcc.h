@@ -1016,7 +1016,7 @@ struct TCCState {
     char **link_argv;
     int link_argc, link_optind;
 
-    /* usage tracking for mincut stub generation */
+    /* usage tracking (-t) */
     unsigned char track_usage;  /* if true, track symbol usage */
     FILE *usage_output;         /* memory stream for usage tracking (Linux only) */
     char *usage_buffer;         /* buffer for tracking data (in memory) */

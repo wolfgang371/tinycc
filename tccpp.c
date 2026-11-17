@@ -1590,7 +1590,7 @@ static int expr_preprocess(TCCState *s1)
             if (s1->run_test)
                 maybe_run_test(s1);
 
-            /* Track macro defined() tests for mincut */
+            /* Track macro defined() tests */
             if (s1->track_usage) {
                 const char *macro_name = get_tok_str(tok, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
@@ -1739,7 +1739,7 @@ ST_FUNC void parse_define(void)
 bad_twosharp:
         tcc_error("'##' cannot appear at either end of macro");
 
-    /* Track macro declaration for mincut */
+    /* Track macro declaration */
     if (tcc_state->track_usage && str.str) {
         const char *macro_name = get_tok_str(v, NULL);
         const char *filename = file ? file->filename : "<unknown>";
@@ -2064,7 +2064,7 @@ ST_FUNC void preprocess(int is_bof)
             }
         }
 
-        /* Track macro ifdef/ifndef tests for mincut */
+        /* Track macro ifdef/ifndef tests */
         if (tcc_state->track_usage) {
             const char *macro_name = get_tok_str(tok, NULL);
             const char *filename = file ? file->filename : "<unknown>";
@@ -3569,7 +3569,7 @@ static int macro_subst_tok(
                     if (t == ' ')
                         str.need_spc |= 1;
                     else {
-                        /* Track identifiers used as macro arguments for mincut */
+                        /* Track identifiers used as macro arguments */
                         /* Only track user identifiers (>= TOK_UIDENT), not keywords (TOK_IDENT..TOK_UIDENT-1) */
                         if (tcc_state->track_usage &&
                             t >= TOK_UIDENT && parlevel == 0) {
@@ -3705,7 +3705,7 @@ static int macro_subst(
             if (s == NULL || nosubst)
                 goto no_subst;
 
-            /* Track macro usage for mincut (USAGE = where macro is expanded) */
+            /* Track macro usage (USAGE = where macro is expanded) */
             if (tcc_state->track_usage && s->d) {
                 const char *macro_name = get_tok_str(t, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
@@ -3824,7 +3824,7 @@ redo:
         /* if reading from file, try to substitute macros */
         Sym *s = define_find(t);
         if (s) {
-            /* Track top-level macro usage for mincut */
+            /* Track top-level macro usage */
             if (tcc_state->track_usage && s->d) {
                 const char *macro_name = get_tok_str(t, NULL);
                 const char *filename = file ? file->filename : "<unknown>";

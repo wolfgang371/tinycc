@@ -245,7 +245,7 @@ static void type_to_str_preserve_typedef(char *buf, int buf_size, CType *type, c
     type_to_str(buf, buf_size, type, varstr);
 }
 
-/* Usage tracking for mincut stub generation */
+/* usage tracking (-t) */
 
 static void track_symbol_usage(const char *name, const char *context)
 {
@@ -1802,7 +1802,7 @@ static Sym *external_sym(int v, CType *type, int r, AttributeDef *ad)
         s->a = ad->a;
         s->asm_label = ad->asm_label;
         s->type.ref = type->ref;
-        s->type.typedef_token = type->typedef_token;  /* Preserve typedef name for mincut tracking */
+        s->type.typedef_token = type->typedef_token;  /* Preserve typedef name for -t tracking */
     } else {
         patch_storage(s, ad, type);
     }
@@ -4896,7 +4896,7 @@ static void struct_decl(CType *type, int u)
     s = sym_push(v | SYM_STRUCT, &type1, 0, bt ? 0 : -1);
     s->r = 0; /* default alignment is zero as gcc */
 
-    /* Track struct/union/enum declaration for mincut */
+    /* Track struct/union/enum declaration */
     if (tcc_state->track_usage && !(v & SYM_FIRST_ANOM)) {
         const char *struct_name = get_tok_str(v, NULL);
         const char *struct_type = (u == VT_UNION) ? "union" : (u == VT_ENUM) ? "enum" : "struct";
@@ -4946,7 +4946,7 @@ do_decl:
                 ss = sym_push(v, &t, VT_CONST, 0);
                 ss->enum_val = ll;
 
-                /* Track enum constant declaration for mincut */
+                /* Track enum constant declaration */
                 if (tcc_state->track_usage) {
                     const char *enum_name = get_tok_str(v, NULL);
                     const char *filename = file ? file->filename : "<unknown>";
@@ -4973,7 +4973,7 @@ do_decl:
             }
             skip('}');
 
-            /* Track complete enum type with all constants for mincut */
+            /* Track complete enum type with all constants */
             if (tcc_state->track_usage && !(s->v & SYM_FIRST_ANOM)) {
                 const char *enum_name = get_tok_str(s->v & ~SYM_STRUCT, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
@@ -5133,7 +5133,7 @@ do_decl:
                         ss = sym_push(v | SYM_FIELD, &type1, 0, 0);
                         ss->a = ad1.a;
 
-                        /* Track field declaration for mincut */
+                        /* Track field declaration */
                         if (tcc_state->track_usage) {
                             const char *struct_name = get_tok_str(s->v & ~SYM_STRUCT, NULL);
                             const char *field_name = get_tok_str(v, NULL);
@@ -5515,7 +5515,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
             if (!s || !(s->type.t & VT_TYPEDEF))
                 goto the_end;
 
-            /* Track typedef usage for mincut */
+            /* Track typedef usage */
             if (tcc_state->track_usage) {
                 const char *typedef_name = get_tok_str(tok, NULL);
                 char type_buf[256];
@@ -6487,7 +6487,7 @@ ST_FUNC void unary(void)
         if (vtop->sym)
           vtop->sym->a.addrtaken = 1;
 
-        /* Track function address being taken for mincut */
+        /* Track function address being taken */
         if (tcc_state->track_usage) {
             if ((vtop->type.t & VT_BTYPE) == VT_FUNC && vtop->sym) {
                 const char *func_name = get_tok_str(vtop->sym->v, NULL);
@@ -6861,7 +6861,7 @@ special_math_val:
         if (!s || IS_ASM_SYM(s)) {
             const char *name = get_tok_str(t, NULL);
             if (tok != '(') {
-                /* Track undeclared variable for mincut (assume int type) */
+                /* Track undeclared variable (assume int type) */
                 if (tcc_state->track_usage) {
                     const char *filename = file ? file->filename : "<unknown>";
                     JSON_START(tcc_state, "EXTERN");
@@ -6902,7 +6902,7 @@ special_math_val:
             JSON_END(tcc_state);
         }
 
-        /* Track ALL variable usage for mincut (before VT_SYM check) */
+        /* Track ALL variable usage (before VT_SYM check) */
         if (tcc_state->track_usage) {
             /* Only track variables, not functions (functions handled elsewhere) */
             /* IMPORTANT: Must check (type.t & VT_BTYPE) == VT_FUNC, not type.t & VT_FUNC! */
@@ -6932,7 +6932,7 @@ special_math_val:
                 indir();
             }
 #endif
-            /* Track extern variable usage for mincut */
+            /* Track extern variable usage */
             if (tcc_state->track_usage) {
                 /* Only track variables, not functions (functions handled elsewhere) */
                 /* IMPORTANT: Must check (type.t & VT_BTYPE) == VT_FUNC, not type.t & VT_FUNC! */
@@ -6952,7 +6952,7 @@ special_math_val:
         } else if (r == VT_CONST && IS_ENUM_VAL(s->type.t)) {
             vtop->c.i = s->enum_val;
 
-            /* Track enum constant usage for mincut */
+            /* Track enum constant usage */
             if (tcc_state->track_usage) {
                 const char *enum_name = get_tok_str(t, NULL);
                 const char *filename = file ? file->filename : "<unknown>";
@@ -6983,7 +6983,7 @@ special_math_val:
             /* expect pointer on structure */
             next();
 	    s = find_field(&vtop->type, tok, &cumofs);
-            /* track field usage for mincut */
+            /* track field usage */
             if (tcc_state->track_usage && s && vtop->type.ref) {
                 const char *struct_name;
                 /* Use typedef name if available, otherwise use struct's internal name */
@@ -7028,7 +7028,7 @@ special_math_val:
             TokenString *p, *p2;
 
             /* function call  */
-            /* Track function call usage for mincut */
+            /* Track function call usage */
             if (tcc_state->track_usage) {
                 if ((vtop->type.t & VT_BTYPE) == VT_FUNC && vtop->sym) {
                     const char *func_name = get_tok_str(vtop->sym->v, NULL);
@@ -7143,7 +7143,7 @@ special_math_val:
 
             next();
             vcheck_cmp(); /* the generators don't like VT_CMP on vtop */
-            /* track function call for mincut */
+            /* track function call */
             if (tcc_state->track_usage && s) {
                 const char *func_name = get_tok_str(s->v, NULL);
                 track_function_usage_with_type(func_name, s, nb_args);
@@ -8545,7 +8545,7 @@ static int decl_designator(init_params *p, CType *type, unsigned long c,
         struct_field:
             next();
 	    f = find_field(type, l, &cumofs);
-            /* Track field usage in designated initializers for mincut */
+            /* Track field usage in designated initializers */
             if (tcc_state->track_usage && f && type->ref) {
                 const char *struct_name;
                 /* Use typedef name if available, otherwise use struct's internal name */
@@ -9202,7 +9202,7 @@ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r,
 
             sym->a = ad->a;
 
-            /* Track typedef usage in local variable declaration for mincut */
+            /* Track typedef usage in local variable declaration */
             if (tcc_state->track_usage) {
                 track_typedef_usage(type);
             }
@@ -9661,7 +9661,7 @@ static int decl(int l)
                 type.t &= ~VT_EXTERN;
                 sym = external_sym(v, &type, 0, &ad);
 
-                /* Track function definition for mincut */
+                /* Track function definition */
                 if (tcc_state->track_usage) {
                     const char *func_name = get_tok_str(v, NULL);
                     char return_type_buf[256];
@@ -9740,7 +9740,7 @@ static int decl(int l)
 				 &tcc_state->nb_inline_fns, fn);
                     skip_or_save_block(&fn->func_str);
 
-                    /* Track function definition (inline) for mincut */
+                    /* Track function definition (inline) */
                     if (tcc_state->track_usage) {
                         const char *func_name = get_tok_str(v, NULL);
                         const char *filename = file ? file->filename : "<unknown>";
@@ -9759,7 +9759,7 @@ static int decl(int l)
                         cur_text_section->sh_flags = text_section->sh_flags;
                     gen_function(sym);
 
-                    /* Track function definition for mincut */
+                    /* Track function definition */
                     if (tcc_state->track_usage) {
                         const char *func_name = get_tok_str(v, NULL);
                         const char *filename = file ? file->filename : "<unknown>";
@@ -9810,7 +9810,7 @@ static int decl(int l)
                     }
                     sym->a = ad.a;
 
-                    /* Track typedef declaration for mincut */
+                    /* Track typedef declaration */
                     /* Emit TYPEDEF_DECL for ALL typedefs to track declaration file */
                     /* Anonymous struct/union typedefs also emit TYPEDEF_STRUCT during usage */
                     /* Anonymous means: tag name is NULL, empty, or compiler-generated (starts with "L.") */
@@ -9891,7 +9891,7 @@ static int decl(int l)
                         type.t |= VT_EXTERN;
                         external_sym(v, &type, r, &ad);
 
-                        /* Track extern variable declaration for mincut */
+                        /* Track extern variable declaration */
                         if (tcc_state->track_usage &&
                             (type.t & VT_BTYPE) != VT_FUNC) {
                             const char *var_name = get_tok_str(v, NULL);
@@ -9913,7 +9913,7 @@ static int decl(int l)
                             track_typedef_usage(&type);
                         }
 
-                        /* Track function declaration for mincut */
+                        /* Track function declaration */
                         if (tcc_state->track_usage &&
                             (type.t & VT_BTYPE) == VT_FUNC) {
                             const char *func_name = get_tok_str(v, NULL);
@@ -10001,7 +10001,7 @@ static int decl(int l)
                             type.t |= VT_EXTERN;
                         decl_initializer_alloc(&type, &ad, r, has_init, v, l);
 
-                        /* Track variable definitions (static, global, local) for mincut */
+                        /* Track variable definitions (static, global, local) */
                         if (tcc_state->track_usage &&
                             (type.t & VT_BTYPE) != VT_FUNC) {
                             const char *var_name = get_tok_str(v, NULL);
@@ -10036,12 +10036,12 @@ static int decl(int l)
                             
                         }
 
-                        /* Track typedef usage in variable declaration (global and static) for mincut */
+                        /* Track typedef usage in variable declaration (global and static) */
                         if (tcc_state->track_usage && (l == VT_CONST || (type.t & VT_STATIC))) {
                             track_typedef_usage(&type);
                         }
 
-                        /* Track static/inline function declarations for mincut */
+                        /* Track static/inline function declarations */
                         if (tcc_state->track_usage &&
                             (type.t & VT_BTYPE) == VT_FUNC) {
                             const char *func_name = get_tok_str(v, NULL);

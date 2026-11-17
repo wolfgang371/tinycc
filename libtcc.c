@@ -2304,7 +2304,7 @@ PUB_FUNC int tcc_track_printf(TCCState *s, const char *fmt, ...) {
 }
 #endif
 
-/* Usage tracking for mincut stub generation */
+/* usage tracking (-t) */
 LIBTCCAPI int tcc_enable_usage_tracking(TCCState *s, const char *output_file)
 {
     if (!s)

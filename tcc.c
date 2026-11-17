@@ -73,7 +73,7 @@ static const char help[] =
     "  -bt[N]       link with backtrace (stack dump) support [show max N callers]\n"
 #endif
     "Symbol tracking:\n"
-    "  -t file      track symbol usage to JSON file (for mincut isolation tool)\n"
+    "  -t file      track symbol declarations and usage to file (JSON lines)\n"
     "Misc. options:\n"
     "  -std=version define __STDC_VERSION__ according to version (c11/gnu11)\n"
     "  -x[c|a|b|n]  specify type of the next infile (C,ASM,BIN,NONE)\n"

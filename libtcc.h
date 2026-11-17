@@ -99,7 +99,7 @@ LIBTCCAPI void tcc_list_symbols(TCCState *s, void *ctx,
     void (*symbol_cb)(void *ctx, const char *name, const void *val));
 
 /*****************************/
-/* usage tracking for mincut stub generation */
+/* usage tracking (-t) */
 
 /* enable usage tracking and set output file path */
 LIBTCCAPI int tcc_enable_usage_tracking(TCCState *s, const char *output_file);
